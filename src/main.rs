@@ -10,14 +10,14 @@ struct AnchorsJson {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct Anchor {
+pub struct Anchor {
     id: String,
     timestamp: u64, // milliseconds
     position: Position,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct Position {
+pub struct Position {
     lat: f64,  // degrees
     #[serde(rename = "long")]
     lon: f64,  // degrees
@@ -97,18 +97,119 @@ pub fn trilaterate(
         distances.push(SPEED_OF_SOUND_WATER * dt_sec);
     }
 
-    // Trilateration using linearized form: subtract equation of first anchor
-    // (x - xi)^2 + (y - yi)^2 + (z - zi)^2 = di^2
-    // Leads to A * p = b where A (3x3) and b (3x1)
+    // Check for geometric quality - detect nearly collinear anchors
+    // For life-supporting systems, we need good geometry
     let p1 = positions[0];
+    let p2 = positions[1];
+    let p3 = positions[2];
+    let p4 = positions[3];
+    
+    // Compute the volume of the tetrahedron formed by the 4 anchors
+    // If this volume is too small, the anchors are nearly coplanar or collinear
+    let v1 = p2 - p1;
+    let v2 = p3 - p1;
+    let v3 = p4 - p1;
+    let volume = (v1.cross(&v2)).dot(&v3).abs() / 6.0;
+    
+    // Compute the maximum distance between anchors for scale
+    let mut max_dist: f64 = 0.0;
+    for i in 0..4 {
+        for j in i+1..4 {
+            let dist = (positions[i] - positions[j]).norm();
+            max_dist = max_dist.max(dist);
+        }
+    }
+    
+    // The volume should be significant relative to the scale
+    // For a regular tetrahedron with edge length L, volume = L³/(6√2) ≈ 0.118 L³
+    // For coplanar anchors, volume will be 0, but we can still do 2D trilateration
+    // We'll check for truly degenerate cases (collinear or nearly collinear)
+    let min_volume = 0.0001 * max_dist.powi(3);  // Much smaller threshold
+    
+    // Also check if anchors are coplanar (all at same depth)
+    let depths: Vec<f64> = positions.iter().map(|p| p.z).collect();
+    let all_same_depth = depths.iter().all(|&d| (d - depths[0]).abs() < 1e-6);
+    
+    // For non-coplanar anchors, check 3D volume
+    if !all_same_depth && volume < min_volume {
+        eprintln!(
+            "WARNING: Anchor geometry is nearly degenerate (collinear or coplanar). \
+            Volume = {:.6} m³, recommended = {:.6} m³. \
+            Position accuracy may be reduced to 5-10 meters.",
+            volume, min_volume
+        );
+    }
+    
+    // For coplanar anchors, check 2D configuration
+    if all_same_depth {
+        // Check if anchors form a good 2D configuration
+        // Compute area of triangles formed by first 3 anchors
+        let area_123 = ((p2.x - p1.x) * (p3.y - p1.y) - (p3.x - p1.x) * (p2.y - p1.y)).abs() / 2.0;
+        let area_124 = ((p2.x - p1.x) * (p4.y - p1.y) - (p4.x - p1.x) * (p2.y - p1.y)).abs() / 2.0;
+        let area_134 = ((p3.x - p1.x) * (p4.y - p1.y) - (p4.x - p1.x) * (p3.y - p1.y)).abs() / 2.0;
+        let area_234 = ((p3.x - p2.x) * (p4.y - p2.y) - (p4.x - p2.x) * (p3.y - p2.y)).abs() / 2.0;
+        
+        let min_area = area_123.min(area_124).min(area_134).min(area_234);
+        let min_required_area = 0.01 * max_dist.powi(2);  // 1% of max_dist squared
+        
+        if min_area < min_required_area {
+            eprintln!(
+                "WARNING: Anchor geometry is nearly collinear in 2D. \
+                Minimum triangle area = {:.3} m², recommended = {:.3} m². \
+                Position accuracy may be reduced to 5-10 meters.",
+                min_area, min_required_area
+            );
+        }
+    }
+
+    // Trilateration using linearized form
     let d1_sq = distances[0] * distances[0];
 
+    // For coplanar anchors at same depth, we need to handle this specially
+    if all_same_depth {
+        // Use only x,y components for 2D trilateration
+        let mut a_data_2d = [[0.0; 2]; 3];
+        let mut b_data = [0.0; 3];
+        
+        for i in 1..4 {
+            let pi = positions[i];
+            let di_sq = distances[i] * distances[i];
+            let row = i - 1;
+            a_data_2d[row][0] = 2.0 * (pi.x - p1.x);
+            a_data_2d[row][1] = 2.0 * (pi.y - p1.y);
+
+            b_data[row] = d1_sq - di_sq
+                + pi.x.powi(2) - p1.x.powi(2)
+                + pi.y.powi(2) - p1.y.powi(2);
+        }
+        
+        // Create overdetermined 3x2 matrix for least squares
+        let a_mat = nalgebra::Matrix3x2::from_rows(&[
+            nalgebra::RowVector2::new(a_data_2d[0][0], a_data_2d[0][1]),
+            nalgebra::RowVector2::new(a_data_2d[1][0], a_data_2d[1][1]),
+            nalgebra::RowVector2::new(a_data_2d[2][0], a_data_2d[2][1]),
+        ]);
+        let b_vec = Vector3::new(b_data[0], b_data[1], b_data[2]);
+        
+        // Solve using least squares
+        let svd = a_mat.svd(true, true);
+        let xy_solution = svd.solve(&b_vec, 1.0e-9).map_err(|e| e.to_string())?;
+        
+        // Construct full 3D position with the common depth
+        let position_local = Vector3::new(xy_solution.x, xy_solution.y, depths[0]);
+        
+        // Convert back to lat/lon/depth for reporting
+        let geodetic_pos = local_to_geodetic(&position_local, reference_pos);
+        
+        return Ok((geodetic_pos, position_local));
+    }
+
+    // For non-coplanar anchors, use full 3D trilateration
     let mut a_data = [[0.0; 3]; 3];
     let mut b_data = [0.0; 3];
     for i in 1..4 {
         let pi = positions[i];
         let di_sq = distances[i] * distances[i];
-        // Row index is i - 1
         let row = i - 1;
         a_data[row][0] = 2.0 * (pi.x - p1.x);
         a_data[row][1] = 2.0 * (pi.y - p1.y);
@@ -127,11 +228,35 @@ pub fn trilaterate(
     ]);
     let b_vec = Vector3::new(b_data[0], b_data[1], b_data[2]);
 
-    // Solve using least-squares (handles singular or near-singular A)
+    // Check condition number of the matrix
     let svd = a_mat.svd(true, true);
-    let position_local = svd
-        .solve(&b_vec, 1.0e-9)
-        .map_err(|e| e.to_string())?;
+    let singular_values = svd.singular_values;
+    let condition_number = if singular_values[2].abs() > 1e-10 {
+        singular_values[0] / singular_values[2]
+    } else {
+        f64::INFINITY
+    };
+    
+    let position_local = if condition_number > 1000.0 {
+        eprintln!(
+            "WARNING: Anchor configuration is ill-conditioned (condition number = {:.1}). \
+            Position accuracy may be reduced to 5-10 meters.",
+            condition_number
+        );
+        
+        // Use regularized least squares (Tikhonov regularization)
+        // Add small values to diagonal to stabilize the solution
+        let lambda = 1e-6 * singular_values[0]; // Regularization parameter
+        let mut a_regularized = a_mat;
+        for i in 0..3 {
+            a_regularized[(i, i)] += lambda;
+        }
+        
+        let svd_reg = a_regularized.svd(true, true);
+        svd_reg.solve(&b_vec, 1.0e-9).map_err(|e| e.to_string())?
+    } else {
+        svd.solve(&b_vec, 1.0e-9).map_err(|e| e.to_string())?
+    };
 
     // Convert back to lat/lon/depth for reporting
     let geodetic_pos = local_to_geodetic(&position_local, reference_pos);
@@ -232,6 +357,16 @@ mod tests {
 
         let (geodetic_pos, local_pos) = result.unwrap();
 
+        // Debug output
+        println!(
+            "Test 1 - Local position: x={:.2} m east, y={:.2} m north, z={:.2} m down",
+            local_pos.x, local_pos.y, local_pos.z
+        );
+        println!(
+            "Test 1 - Geodetic position: lat={:.6}, lon={:.6}, depth={:.2} m",
+            geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
+        );
+
         // Check local position
         assert!((local_pos.x - 0.00).abs() < 1e-2);
         assert!((local_pos.y - 22.07).abs() < 1e-2);
@@ -314,5 +449,82 @@ mod tests {
         assert!((geodetic_pos.lat - 32.123644).abs() < 1e-6);
         assert!((geodetic_pos.lon - 45.476735).abs() < 1e-6);
         assert!((geodetic_pos.depth - 14.50).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_trilateration_nearly_collinear_anchors() {
+        // Test case with anchors that are nearly collinear (along a line)
+        // Should still produce a result but with reduced accuracy
+        let json_data = r#"
+        {
+          "anchors": [
+            {
+              "id": "001",
+              "timestamp": 1723111199986,
+              "position": {
+                "lat": 32.12345,
+                "long": 45.47675,
+                "depth": 0.0
+              }
+            },
+            {
+              "id": "002",
+              "timestamp": 1723111199988,
+              "position": {
+                "lat": 32.12346,
+                "long": 45.47676,
+                "depth": 0.0
+              }
+            },
+            {
+              "id": "003",
+              "timestamp": 1723111199988,
+              "position": {
+                "lat": 32.12347,
+                "long": 45.47677,
+                "depth": 0.0
+              }
+            },
+            {
+              "id": "004",
+              "timestamp": 1723111199986,
+              "position": {
+                "lat": 32.12348,
+                "long": 45.47678,
+                "depth": 0.0
+              }
+            }
+          ]
+        }
+        "#;
+
+        let anchors_json: AnchorsJson = serde_json::from_str(json_data).unwrap();
+        let receiver_time_ms: u64 = 1723111200000;
+
+        let result = trilaterate(&anchors_json.anchors, receiver_time_ms);
+        
+        // Should produce a result even with nearly collinear anchors
+        assert!(result.is_ok());
+        
+        let (geodetic_pos, local_pos) = result.unwrap();
+        
+        println!(
+            "Nearly collinear anchors result: lat={:.6}, lon={:.6}, depth={:.2} m",
+            geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
+        );
+        println!(
+            "Local coordinates: x={:.2} m east, y={:.2} m north, z={:.2} m down",
+            local_pos.x, local_pos.y, local_pos.z
+        );
+        
+        // For nearly collinear anchors, we expect reduced accuracy (5-10 meters)
+        // Check that the result is within reasonable bounds of the anchor area
+        let anchor_center_lat = 32.123465; // Average of anchor latitudes
+        let anchor_center_lon = 45.476765; // Average of anchor longitudes
+        
+        // Allow up to ~10 meters error (roughly 0.0001 degrees)
+        assert!((geodetic_pos.lat - anchor_center_lat).abs() < 0.0001);
+        assert!((geodetic_pos.lon - anchor_center_lon).abs() < 0.0001);
+        assert!(geodetic_pos.depth.abs() < 10.0);
     }
 } 

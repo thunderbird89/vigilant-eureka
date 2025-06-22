@@ -71,8 +71,8 @@ pub fn trilaterate(
     anchors: &[Anchor],
     receiver_time_ms: u64,
 ) -> Result<(Position, Vector3<f64>), String> {
-    if anchors.len() != 4 {
-        return Err("Exactly four anchors required".to_string());
+    if anchors.len() < 3 || anchors.len() > 4 {
+        return Err("Between 3 and 4 anchors required".to_string());
     }
 
     // Reference position (first anchor) for local tangent plane
@@ -96,6 +96,67 @@ pub fn trilaterate(
         let dt_sec = dt_ms as f64 / 1000.0;
         distances.push(SPEED_OF_SOUND_WATER * dt_sec);
     }
+
+    // Handle 3-anchor case: 2D solution only
+    if anchors.len() == 3 {
+        eprintln!(
+            "WARNING: Only 3 anchors available. Providing 2D position without depth information. \
+            Depth will be estimated as average anchor depth."
+        );
+        
+        let p1 = positions[0];
+        let d1_sq = distances[0] * distances[0];
+        
+        // Use 2x2 system for x,y coordinates only
+        let mut a_data_2d = [[0.0; 2]; 2];
+        let mut b_data = [0.0; 2];
+        
+        for i in 1..3 {
+            let pi = positions[i];
+            let di_sq = distances[i] * distances[i];
+            let row = i - 1;
+            a_data_2d[row][0] = 2.0 * (pi.x - p1.x);
+            a_data_2d[row][1] = 2.0 * (pi.y - p1.y);
+
+            // For 3 anchors, we assume the receiver is at approximately the same depth as anchors
+            // This simplifies the equation by removing the z component
+            b_data[row] = d1_sq - di_sq
+                + pi.x.powi(2) - p1.x.powi(2)
+                + pi.y.powi(2) - p1.y.powi(2)
+                + pi.z.powi(2) - p1.z.powi(2);
+        }
+        
+        let a_mat = nalgebra::Matrix2::from_rows(&[
+            nalgebra::RowVector2::new(a_data_2d[0][0], a_data_2d[0][1]),
+            nalgebra::RowVector2::new(a_data_2d[1][0], a_data_2d[1][1]),
+        ]);
+        let b_vec = nalgebra::Vector2::new(b_data[0], b_data[1]);
+        
+        // Check if anchors are collinear in 2D
+        let det = a_mat.determinant();
+        if det.abs() < 1e-10 {
+            return Err("Anchors are collinear - cannot determine position".to_string());
+        }
+        
+        // Solve for x,y coordinates
+        let xy_solution = a_mat.try_inverse()
+            .ok_or("Cannot solve: anchors are nearly collinear")?
+            * b_vec;
+        
+        // Estimate depth as weighted average of anchor depths based on distances
+        let total_weight: f64 = distances.iter().map(|d| 1.0 / (d + 1.0)).sum();
+        let estimated_depth: f64 = positions.iter()
+            .zip(distances.iter())
+            .map(|(p, d)| p.z * (1.0 / (d + 1.0)) / total_weight)
+            .sum();
+        
+        let position_local = Vector3::new(xy_solution.x, xy_solution.y, estimated_depth);
+        let geodetic_pos = local_to_geodetic(&position_local, reference_pos);
+        
+        return Ok((geodetic_pos, position_local));
+    }
+
+    // For 4 anchors, continue with existing logic...
 
     // Check for geometric quality - detect nearly collinear anchors
     // For life-supporting systems, we need good geometry
@@ -431,14 +492,14 @@ mod tests {
 
         let (geodetic_pos, local_pos) = result.unwrap();
 
-        // println!(
-        //     "Estimated receiver position (local END): x={:.2} m east, y={:.2} m north, z={:.2} m down",
-        //     local_pos.x, local_pos.y, local_pos.z
-        // );
-        // println!(
-        //     "Estimated receiver position (lat/lon/depth): lat={:.6}, lon={:.6}, depth={:.2} m",
-        //     geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
-        // );
+        println!(
+            "Estimated receiver position (local END): x={:.2} m east, y={:.2} m north, z={:.2} m down",
+            local_pos.x, local_pos.y, local_pos.z
+        );
+        println!(
+            "Estimated receiver position (lat/lon/depth): lat={:.6}, lon={:.6}, depth={:.2} m",
+            geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
+        );
 
         // Check local position
         assert!((local_pos.x - -1.46).abs() < 1e-2);
@@ -526,5 +587,75 @@ mod tests {
         assert!((geodetic_pos.lat - anchor_center_lat).abs() < 0.0001);
         assert!((geodetic_pos.lon - anchor_center_lon).abs() < 0.0001);
         assert!(geodetic_pos.depth.abs() < 10.0);
+    }
+
+    #[test]
+    fn test_trilateration_three_anchors_only() {
+        // Test case with only 3 anchors (one signal blocked by terrain)
+        // Should produce 2D solution with estimated depth
+        let json_data = r#"
+        {
+          "anchors": [
+            {
+              "id": "001",
+              "timestamp": 1723111199986,
+              "position": {
+                "lat": 32.12345,
+                "long": 45.47675,
+                "depth": 5.0
+              }
+            },
+            {
+              "id": "002",
+              "timestamp": 1723111199988,
+              "position": {
+                "lat": 32.12365,
+                "long": 45.47695,
+                "depth": 10.0
+              }
+            },
+            {
+              "id": "003",
+              "timestamp": 1723111199988,
+              "position": {
+                "lat": 32.12365,
+                "long": 45.47655,
+                "depth": 15.0
+              }
+            }
+          ]
+        }
+        "#;
+
+        let anchors_json: AnchorsJson = serde_json::from_str(json_data).unwrap();
+        let receiver_time_ms: u64 = 1723111200000;
+
+        let result = trilaterate(&anchors_json.anchors, receiver_time_ms);
+        
+        // Should produce a result with 3 anchors
+        assert!(result.is_ok());
+        
+        let (geodetic_pos, local_pos) = result.unwrap();
+        
+        println!(
+            "3-anchor result: lat={:.6}, lon={:.6}, depth={:.2} m",
+            geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
+        );
+        println!(
+            "Local coordinates: x={:.2} m east, y={:.2} m north, z={:.2} m down",
+            local_pos.x, local_pos.y, local_pos.z
+        );
+        
+        // Check that lat/lon are reasonable (similar to 4-anchor test but may be less accurate)
+        // The depth should be approximately the weighted average of anchor depths
+        assert!((local_pos.x - 0.00).abs() < 5.0); // Allow more error for 3-anchor case
+        assert!((local_pos.y - 22.0).abs() < 5.0);
+        
+        // Depth should be somewhere between min and max anchor depths
+        assert!(geodetic_pos.depth >= 5.0 && geodetic_pos.depth <= 15.0);
+        
+        // Check geodetic position is in reasonable range
+        assert!((geodetic_pos.lat - 32.1236).abs() < 0.0001);
+        assert!((geodetic_pos.lon - 45.4768).abs() < 0.0001);
     }
 } 

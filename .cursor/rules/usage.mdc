@@ -1,0 +1,52 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Beholder Project
+
+This project is part of an underwater location and navigation system. At its current state, this project implements a trilateration algorithm in Rust to determine the position of a receiver based on signals from four anchors.
+
+## Guidelines
+
+All logic should be covered by tests that test both the happy path and error handling. Good test coverage is essential as the system will be potentially life-supporting for scuba divers.
+
+## Main Logic
+
+The core logic is in `[src/main.rs](mdc:src/main.rs)`. This file contains:
+- Data structures for `Anchor` and `Position`.
+- `geodetic_to_local` and `local_to_geodetic` conversion functions.
+- The `trilaterate` function which performs the position calculation.
+- The `main` function to run the program from the command line.
+
+## Usage
+
+To run the program, use the following command:
+
+```bash
+cargo run -- <path_to_json_file> <receiver_timestamp_ms>
+```
+
+### Input JSON format
+
+The input JSON file should contain a list of four anchors, like this:
+```json
+{
+  "anchors": [
+    {
+      "id": "001",
+      "timestamp": 1723111199986,
+      "position": {
+        "lat": 32.12345,
+        "long": 45.47675,
+        "depth": 0.0
+      }
+    },
+    // ... 3 more anchors
+  ]
+}
+```
+
+The `timestamp` is in milliseconds. `lat` and `long` are in degrees, and `depth` is in meters (positive down).
+
+The tests in `[src/main.rs](mdc:src/main.rs)` provide good examples of usage and expected data.

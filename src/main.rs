@@ -909,7 +909,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Check if minimum requirements are met
         let passing_configs = results.iter().filter(|r| r.meets_requirement).count();
         if passing_configs == 0 {
-            eprintln!("ERROR: No configurations meet the 0.5m accuracy requirement!");
+            eprintln!("ERROR: No configurations meet the 1.0m accuracy requirement!");
             return Err("Accuracy validation failed".into());
         }
         

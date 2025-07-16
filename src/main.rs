@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::f64::consts::PI;
 
 pub mod accuracy_validation;
+pub mod performance_monitor;
+pub mod optimization_cache;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -272,7 +274,7 @@ pub struct Anchor {
     position: Position,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct Position {
     lat: f64,  // degrees
     #[serde(rename = "long")]
@@ -323,16 +325,74 @@ fn local_to_geodetic(local_pos: &Vector3<f64>, reference: &Position) -> Position
     }
 }
 
+/// Performance-monitored trilateration with timing and memory tracking
+pub fn trilaterate_with_monitoring(
+    anchors: &[Anchor],
+    receiver_time_ms: u64,
+    monitor: Option<&mut performance_monitor::PerformanceMonitor>,
+) -> Result<(Position, Vector3<f64>), String> {
+    use performance_monitor::{PerformanceMetrics, MemoryTracker, TimingProfiler};
+    use std::time::Instant;
+
+    let start_time = Instant::now();
+    let mut memory_tracker = MemoryTracker::new();
+    let mut profiler = TimingProfiler::new();
+    
+    profiler.start();
+    
+    // Track memory usage for input data
+    let input_memory = std::mem::size_of_val(anchors) + std::mem::size_of::<u64>();
+    memory_tracker.track_allocation("input_data", input_memory);
+    
+    let result = trilaterate_internal(anchors, receiver_time_ms, &mut profiler, &mut memory_tracker);
+    
+    let total_time = start_time.elapsed();
+    profiler.checkpoint("total_computation");
+    
+    // Record performance metrics
+    if let Some(monitor) = monitor {
+        let metrics = PerformanceMetrics {
+            computation_time_ms: total_time.as_secs_f64() * 1000.0,
+            memory_usage_bytes: memory_tracker.get_peak_usage(),
+            operation_count: 1,
+            timestamp: start_time,
+        };
+        monitor.record_metrics(metrics);
+    }
+    
+    result
+}
+
+/// Original trilateration function for backward compatibility
 pub fn trilaterate(
     anchors: &[Anchor],
     receiver_time_ms: u64,
 ) -> Result<(Position, Vector3<f64>), String> {
+    trilaterate_with_monitoring(anchors, receiver_time_ms, None)
+}
+
+/// Internal trilateration implementation with detailed profiling
+fn trilaterate_internal(
+    anchors: &[Anchor],
+    receiver_time_ms: u64,
+    profiler: &mut performance_monitor::TimingProfiler,
+    memory_tracker: &mut performance_monitor::MemoryTracker,
+) -> Result<(Position, Vector3<f64>), String> {
+    profiler.checkpoint("validation_start");
+    
     if anchors.len() < 3 || anchors.len() > 4 {
         return Err("Between 3 and 4 anchors required".to_string());
     }
 
+    // Track memory for intermediate calculations
+    let positions_memory = std::mem::size_of::<Vector3<f64>>() * anchors.len();
+    let distances_memory = std::mem::size_of::<f64>() * anchors.len();
+    memory_tracker.track_allocation("positions_vec", positions_memory);
+    memory_tracker.track_allocation("distances_vec", distances_memory);
+
     // Reference position (first anchor) for local tangent plane
     let reference_pos = &anchors[0].position;
+    profiler.checkpoint("coordinate_conversion_start");
 
     // Convert anchor positions to local coordinates and compute distances
     let mut positions: Vec<Vector3<f64>> = Vec::new();
@@ -353,8 +413,11 @@ pub fn trilaterate(
         distances.push(SPEED_OF_SOUND_WATER * dt_sec);
     }
 
+    profiler.checkpoint("coordinate_conversion_complete");
+
     // Handle 3-anchor case: 2D solution only
     if anchors.len() == 3 {
+        profiler.checkpoint("3_anchor_processing_start");
         eprintln!(
             "WARNING: Only 3 anchors available. Providing 2D position without depth information. \
             Depth will be estimated as average anchor depth."
@@ -664,12 +727,174 @@ pub fn embedded_positioning_demo() {
     println!("EmbeddedSystemConfig: {} bytes", mem::size_of::<EmbeddedSystemConfig>());
 }
 
+/// Demonstration of performance monitoring and optimization features
+pub fn performance_optimization_demo() {
+    use performance_monitor::{PerformanceMonitor, PerformanceConstraints};
+    use optimization_cache::OptimizationManager;
+    
+    println!("=== PERFORMANCE OPTIMIZATION DEMO ===\n");
+    
+    // Initialize performance monitoring for embedded system
+    let constraints = PerformanceConstraints::embedded_system();
+    let mut monitor = PerformanceMonitor::new(constraints);
+    
+    // Initialize optimization manager with caching
+    let mut optimizer = OptimizationManager::new();
+    
+    println!("1. PERFORMANCE MONITORING SETUP");
+    println!("   - Max computation time: {:.1} ms", monitor.constraints.max_computation_time_ms);
+    println!("   - Max memory usage: {} KB", monitor.constraints.max_memory_usage_bytes / 1024);
+    println!("   - Min update rate: {:.1} Hz\n", monitor.constraints.min_update_rate_hz);
+    
+    // Create test anchor data
+    let base_time = 1723111199000u64;
+    CompactAnchorMessage::set_base_timestamp(base_time);
+    
+    let test_anchors = vec![
+        Anchor {
+            id: "001".to_string(),
+            timestamp: base_time + 986,
+            position: Position { lat: 32.12345, lon: 45.47675, depth: 0.0 },
+        },
+        Anchor {
+            id: "002".to_string(),
+            timestamp: base_time + 988,
+            position: Position { lat: 32.12365, lon: 45.47695, depth: 0.0 },
+        },
+        Anchor {
+            id: "003".to_string(),
+            timestamp: base_time + 988,
+            position: Position { lat: 32.12365, lon: 45.47655, depth: 0.0 },
+        },
+        Anchor {
+            id: "004".to_string(),
+            timestamp: base_time + 986,
+            position: Position { lat: 32.12385, lon: 45.47675, depth: 0.0 },
+        },
+    ];
+    
+    println!("2. RUNNING PERFORMANCE TESTS");
+    
+    // Test multiple positioning calculations with monitoring
+    for i in 0..10 {
+        let receiver_time = base_time + 1000 + (i * 100);
+        
+        // Add some anchor data to cache
+        for (j, anchor) in test_anchors.iter().enumerate() {
+            let compact_msg = CompactAnchorMessage::new(
+                (j + 1) as u16, 
+                anchor.timestamp + (i * 10), 
+                anchor.position.lat, 
+                anchor.position.lon, 
+                anchor.position.depth, 
+                255 - (i as u8)
+            );
+            optimizer.anchor_cache.insert((j + 1) as u16, compact_msg);
+        }
+        
+        // Perform trilateration with monitoring
+        monitor.start_operation("trilateration");
+        let result = trilaterate_with_monitoring(&test_anchors, receiver_time, Some(&mut monitor));
+        let duration = monitor.end_operation("trilateration");
+        
+        if let Ok((pos, _)) = result {
+            println!("   Test {}: Position calculated in {:.2} ms - lat={:.6}, lon={:.6}", 
+                     i + 1, 
+                     duration.map_or(0.0, |d| d.as_secs_f64() * 1000.0),
+                     pos.lat, pos.lon);
+        }
+        
+        // Simulate some processing delay
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    
+    println!("\n3. PERFORMANCE STATISTICS");
+    let stats = monitor.get_statistics();
+    println!("   Total operations: {}", stats.total_operations);
+    println!("   Mean computation time: {:.2} ms", stats.mean_computation_time_ms);
+    println!("   Max computation time: {:.2} ms", stats.max_computation_time_ms);
+    println!("   95th percentile time: {:.2} ms", stats.p95_computation_time_ms);
+    println!("   Violation count: {}", stats.violation_count);
+    println!("   Violation rate: {:.1}%", stats.violation_rate * 100.0);
+    
+    // Validate constraints
+    let validation = monitor.validate_real_time_constraints();
+    println!("\n4. CONSTRAINT VALIDATION");
+    if validation.is_valid {
+        println!("   ✓ All real-time constraints satisfied");
+    } else {
+        println!("   ⚠ Constraint violations detected:");
+        for violation in &validation.violations {
+            println!("     - {}", violation);
+        }
+    }
+    
+    println!("\n5. CACHE OPTIMIZATION STATISTICS");
+    let cache_stats = optimizer.anchor_cache.get_stats();
+    println!("   Anchor cache entries: {}/{}", cache_stats.total_entries, cache_stats.max_entries);
+    println!("   Total cache accesses: {}", cache_stats.total_accesses);
+    println!("   Average data age: {} ms", cache_stats.avg_age_ms);
+    
+    // Test calculation caching
+    optimizer.calculation_cache.cache_coordinate_transform(
+        "test_transform".to_string(), 
+        nalgebra::Vector3::new(1.0, 2.0, 3.0)
+    );
+    optimizer.calculation_cache.cache_distance("test_distance".to_string(), 150.0);
+    
+    let calc_stats = optimizer.calculation_cache.get_stats();
+    println!("   Calculation cache entries: {}", calc_stats.total_entries);
+    println!("   Coordinate transforms cached: {}", calc_stats.coordinate_transforms);
+    println!("   Distance calculations cached: {}", calc_stats.distance_calculations);
+    
+    // Memory pool utilization
+    let vector_util = optimizer.vector_pool.get_utilization();
+    let position_util = optimizer.position_pool.get_utilization();
+    println!("\n6. MEMORY POOL UTILIZATION");
+    println!("   Vector3 pool: {}/{} ({:.1}% utilized)", 
+             vector_util.allocated_count, vector_util.total_capacity, vector_util.utilization_percent);
+    println!("   Position pool: {}/{} ({:.1}% utilized)", 
+             position_util.allocated_count, position_util.total_capacity, position_util.utilization_percent);
+    
+    // Generate comprehensive reports
+    println!("\n7. DETAILED REPORTS");
+    println!("\n--- PERFORMANCE MONITOR REPORT ---");
+    let perf_report = monitor.generate_embedded_report();
+    println!("{}", perf_report);
+    
+    println!("\n--- OPTIMIZATION SYSTEM REPORT ---");
+    let opt_report = optimizer.generate_report();
+    println!("{}", opt_report);
+    
+    // Test lazy evaluation
+    println!("\n8. LAZY EVALUATION DEMO");
+    use optimization_cache::LazyValue;
+    let mut lazy_calculation = LazyValue::new(|| {
+        println!("   Performing expensive calculation...");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        42.0
+    });
+    
+    println!("   Lazy value initialized: {}", lazy_calculation.is_initialized());
+    println!("   First access: {}", lazy_calculation.get());
+    println!("   Lazy value initialized: {}", lazy_calculation.is_initialized());
+    println!("   Second access (cached): {}", lazy_calculation.get());
+    
+    println!("\n=== PERFORMANCE OPTIMIZATION DEMO COMPLETE ===");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     
     // Check for embedded demo mode
     if args.len() == 2 && args[1] == "--embedded-demo" {
         embedded_positioning_demo();
+        return Ok(());
+    }
+    
+    // Check for performance monitoring demo mode
+    if args.len() == 2 && args[1] == "--performance-demo" {
+        performance_optimization_demo();
         return Ok(());
     }
     
@@ -698,6 +923,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.get(0).map_or("trilateration", |s| s.as_str())
         );
         eprintln!("   or: {} --embedded-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
+        eprintln!("   or: {} --performance-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --accuracy-validation", args.get(0).map_or("trilateration", |s| s.as_str()));
         return Err("Invalid arguments".into());
     }

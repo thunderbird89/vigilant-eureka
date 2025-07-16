@@ -4,6 +4,260 @@ use std::f64::consts::PI;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
+// Fixed-point arithmetic support for microcontrollers without FPU
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FixedPoint32 {
+    value: i32,
+    scale: u8, // Number of fractional bits
+}
+
+impl FixedPoint32 {
+    pub fn new(value: f64, scale: u8) -> Self {
+        let multiplier = 1i32 << scale;
+        Self {
+            value: (value * multiplier as f64) as i32,
+            scale,
+        }
+    }
+    
+    pub fn to_f64(self) -> f64 {
+        let divisor = 1i32 << self.scale;
+        self.value as f64 / divisor as f64
+    }
+    
+    pub fn add(self, other: Self) -> Self {
+        assert_eq!(self.scale, other.scale);
+        Self {
+            value: self.value + other.value,
+            scale: self.scale,
+        }
+    }
+    
+    pub fn sub(self, other: Self) -> Self {
+        assert_eq!(self.scale, other.scale);
+        Self {
+            value: self.value - other.value,
+            scale: self.scale,
+        }
+    }
+    
+    pub fn mul(self, other: Self) -> Self {
+        assert_eq!(self.scale, other.scale);
+        let result = (self.value as i64 * other.value as i64) >> self.scale;
+        Self {
+            value: result as i32,
+            scale: self.scale,
+        }
+    }
+}
+
+// Memory-optimized position representation for embedded systems
+#[derive(Debug, Clone, Copy)]
+pub struct LocalPosition {
+    pub east_mm: i32,   // millimeters east
+    pub north_mm: i32,  // millimeters north  
+    pub down_mm: i32,   // millimeters down
+}
+
+impl LocalPosition {
+    pub fn new(east_m: f64, north_m: f64, down_m: f64) -> Self {
+        Self {
+            east_mm: (east_m * 1000.0) as i32,
+            north_mm: (north_m * 1000.0) as i32,
+            down_mm: (down_m * 1000.0) as i32,
+        }
+    }
+    
+    pub fn to_meters(&self) -> (f64, f64, f64) {
+        (
+            self.east_mm as f64 / 1000.0,
+            self.north_mm as f64 / 1000.0,
+            self.down_mm as f64 / 1000.0,
+        )
+    }
+    
+    pub fn to_vector3(&self) -> Vector3<f64> {
+        let (east, north, down) = self.to_meters();
+        Vector3::new(east, north, down)
+    }
+}
+
+// Packed structure for minimal memory footprint
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct CompactAnchorMessage {
+    pub anchor_id: u16,
+    pub timestamp_ms: u32,      // Relative timestamp (saves 4 bytes vs u64)
+    pub lat_micro_deg: i32,     // Latitude * 1e6 (saves 4 bytes vs f64)
+    pub lon_micro_deg: i32,     // Longitude * 1e6 (saves 4 bytes vs f64)
+    pub depth_mm: u16,          // Depth in millimeters (saves 6 bytes vs f64)
+    pub quality: u8,            // Signal quality indicator
+}
+
+// Global base timestamp for relative timestamp calculations
+static mut BASE_TIMESTAMP_MS: u64 = 0;
+
+impl CompactAnchorMessage {
+    pub fn set_base_timestamp(base_ms: u64) {
+        unsafe {
+            BASE_TIMESTAMP_MS = base_ms;
+        }
+    }
+    
+    pub fn new(anchor_id: u16, timestamp_ms: u64, lat: f64, lon: f64, depth: f64, quality: u8) -> Self {
+        let relative_timestamp = unsafe {
+            if BASE_TIMESTAMP_MS == 0 {
+                BASE_TIMESTAMP_MS = timestamp_ms;
+            }
+            (timestamp_ms.saturating_sub(BASE_TIMESTAMP_MS)) as u32
+        };
+        
+        Self {
+            anchor_id,
+            timestamp_ms: relative_timestamp,
+            lat_micro_deg: (lat * 1_000_000.0) as i32,
+            lon_micro_deg: (lon * 1_000_000.0) as i32,
+            depth_mm: (depth * 1000.0) as u16,
+            quality,
+        }
+    }
+    
+    pub fn get_position(&self) -> Position {
+        Position {
+            lat: self.lat_micro_deg as f64 / 1_000_000.0,
+            lon: self.lon_micro_deg as f64 / 1_000_000.0,
+            depth: self.depth_mm as f64 / 1000.0,
+        }
+    }
+    
+    pub fn get_timestamp(&self) -> u64 {
+        unsafe {
+            BASE_TIMESTAMP_MS + self.timestamp_ms as u64
+        }
+    }
+}
+
+// Circular buffer for anchor message storage with fixed size
+#[derive(Debug)]
+pub struct AnchorBuffer<const N: usize> {
+    messages: [Option<CompactAnchorMessage>; N],
+    head: usize,
+    count: usize,
+}
+
+impl<const N: usize> AnchorBuffer<N> {
+    pub fn new() -> Self {
+        Self {
+            messages: [None; N],
+            head: 0,
+            count: 0,
+        }
+    }
+    
+    pub fn push(&mut self, message: CompactAnchorMessage) {
+        self.messages[self.head] = Some(message);
+        self.head = (self.head + 1) % N;
+        if self.count < N {
+            self.count += 1;
+        }
+    }
+    
+    pub fn get_recent_messages(&self, max_age_ms: u32, current_time_ms: u64) -> [Option<CompactAnchorMessage>; N] {
+        let mut result = [None; N];
+        let mut result_idx = 0;
+        
+        for i in 0..self.count {
+            let idx = if self.head >= i + 1 {
+                self.head - i - 1
+            } else {
+                N + self.head - i - 1
+            };
+            
+            if let Some(msg) = self.messages[idx] {
+                let age_ms = current_time_ms.saturating_sub(msg.get_timestamp());
+                if age_ms <= max_age_ms as u64 && result_idx < N {
+                    result[result_idx] = Some(msg);
+                    result_idx += 1;
+                }
+            }
+        }
+        
+        result
+    }
+    
+    pub fn len(&self) -> usize {
+        self.count
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    
+    pub fn clear(&mut self) {
+        self.messages = [None; N];
+        self.head = 0;
+        self.count = 0;
+    }
+}
+
+// Memory-optimized anchor configuration
+#[derive(Debug, Clone)]
+pub struct EmbeddedAnchorConfig {
+    pub id: u16,
+    pub position: CompactAnchorMessage,
+    pub max_range_mm: u32,  // Range in millimeters to save space
+    pub enabled: bool,
+}
+
+impl EmbeddedAnchorConfig {
+    pub fn new(id: u16, lat: f64, lon: f64, depth: f64, max_range_m: f32) -> Self {
+        Self {
+            id,
+            position: CompactAnchorMessage::new(id, 0, lat, lon, depth, 255),
+            max_range_mm: (max_range_m * 1000.0) as u32,
+            enabled: true,
+        }
+    }
+    
+    pub fn get_max_range_m(&self) -> f32 {
+        self.max_range_mm as f32 / 1000.0
+    }
+}
+
+// Fixed-size array for anchor configurations (replaces Vec)
+pub type AnchorConfigArray<const N: usize> = [Option<EmbeddedAnchorConfig>; N];
+
+// System configuration optimized for embedded systems
+#[derive(Debug, Clone)]
+pub struct EmbeddedSystemConfig {
+    pub sound_speed_mm_per_ms: u16,     // Sound speed in mm/ms (saves space vs f32)
+    pub max_anchor_age_ms: u32,
+    pub min_anchors: u8,
+    pub position_timeout_ms: u32,
+    pub accuracy_threshold_mm: u16,     // Accuracy threshold in millimeters
+}
+
+impl EmbeddedSystemConfig {
+    pub fn new() -> Self {
+        Self {
+            sound_speed_mm_per_ms: 1500,  // 1500 m/s = 1.5 mm/ms
+            max_anchor_age_ms: 5000,
+            min_anchors: 3,
+            position_timeout_ms: 200,
+            accuracy_threshold_mm: 2000,  // 2 meters
+        }
+    }
+    
+    pub fn get_sound_speed_m_per_s(&self) -> f64 {
+        self.sound_speed_mm_per_ms as f64 / 1000.0 * 1000.0
+    }
+    
+    pub fn get_accuracy_threshold_m(&self) -> f32 {
+        self.accuracy_threshold_mm as f32 / 1000.0
+    }
+}
+
+// Legacy structures for compatibility with existing JSON parsing
 #[derive(Debug, Deserialize)]
 struct AnchorsJson {
     anchors: Vec<Anchor>,
@@ -325,13 +579,104 @@ pub fn trilaterate(
     Ok((geodetic_pos, position_local))
 }
 
+// Demonstration function showing embedded-optimized data structures usage
+pub fn embedded_positioning_demo() {
+    println!("=== Embedded Positioning System Demo ===");
+    
+    // Initialize system configuration
+    let config = EmbeddedSystemConfig::new();
+    println!("System config: sound speed = {:.1} m/s, max anchor age = {}ms", 
+             config.get_sound_speed_m_per_s(), config.max_anchor_age_ms);
+    
+    // Create anchor buffer with fixed size (no heap allocation)
+    let mut anchor_buffer: AnchorBuffer<8> = AnchorBuffer::new();
+    
+    // Set up base timestamp for compact messages
+    let base_time = 1723111199000u64;
+    CompactAnchorMessage::set_base_timestamp(base_time);
+    
+    // Create compact anchor messages (much smaller memory footprint)
+    let anchors = [
+        CompactAnchorMessage::new(1, base_time + 986, 32.12345, 45.47675, 0.0, 255),
+        CompactAnchorMessage::new(2, base_time + 988, 32.12365, 45.47695, 0.0, 254),
+        CompactAnchorMessage::new(3, base_time + 988, 32.12365, 45.47655, 0.0, 253),
+        CompactAnchorMessage::new(4, base_time + 986, 32.12385, 45.47675, 0.0, 252),
+    ];
+    
+    // Add to buffer
+    for anchor in anchors.iter() {
+        anchor_buffer.push(*anchor);
+    }
+    
+    println!("Added {} anchor messages to buffer", anchor_buffer.len());
+    
+    // Get recent messages (within 5 seconds)
+    let current_time = base_time + 1000;
+    let recent_messages = anchor_buffer.get_recent_messages(5000, current_time);
+    
+    let mut valid_anchors = Vec::new();
+    for msg_opt in recent_messages.iter() {
+        if let Some(msg) = msg_opt {
+            // Copy values to avoid unaligned access to packed struct
+            let anchor_id = msg.anchor_id;
+            // Convert compact message back to legacy format for trilateration
+            let anchor = Anchor {
+                id: anchor_id.to_string(),
+                timestamp: msg.get_timestamp(),
+                position: msg.get_position(),
+            };
+            valid_anchors.push(anchor);
+        }
+    }
+    
+    println!("Found {} recent anchor messages", valid_anchors.len());
+    
+    // Perform trilateration
+    if let Ok((geodetic_pos, local_pos)) = trilaterate(&valid_anchors, current_time) {
+        // Convert to memory-optimized local position
+        let embedded_pos = LocalPosition::new(local_pos.x, local_pos.y, local_pos.z);
+        let (east, north, down) = embedded_pos.to_meters();
+        
+        println!("Position calculated successfully:");
+        println!("  Embedded local position: east={:.2}m, north={:.2}m, down={:.2}m", east, north, down);
+        println!("  Geodetic: lat={:.6}, lon={:.6}, depth={:.2}m", 
+                 geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth);
+        
+        // Demonstrate fixed-point arithmetic for microcontrollers without FPU
+        let fixed_east = FixedPoint32::new(east, 16);
+        let fixed_north = FixedPoint32::new(north, 16);
+        println!("  Fixed-point (16-bit fractional): east={:.3}, north={:.3}", 
+                 fixed_east.to_f64(), fixed_north.to_f64());
+    } else {
+        println!("Trilateration failed");
+    }
+    
+    // Show memory usage
+    use std::mem;
+    println!("\n=== Memory Footprint Analysis ===");
+    println!("CompactAnchorMessage: {} bytes", mem::size_of::<CompactAnchorMessage>());
+    println!("Legacy Anchor: {} bytes", mem::size_of::<Anchor>());
+    println!("LocalPosition: {} bytes", mem::size_of::<LocalPosition>());
+    println!("FixedPoint32: {} bytes", mem::size_of::<FixedPoint32>());
+    println!("AnchorBuffer<8>: {} bytes", mem::size_of::<AnchorBuffer<8>>());
+    println!("EmbeddedSystemConfig: {} bytes", mem::size_of::<EmbeddedSystemConfig>());
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    
+    // Check for embedded demo mode
+    if args.len() == 2 && args[1] == "--embedded-demo" {
+        embedded_positioning_demo();
+        return Ok(());
+    }
+    
     if args.len() != 3 {
         eprintln!(
             "Usage: {} <json_file> <receiver_timestamp_ms>",
             args.get(0).map_or("trilateration", |s| s.as_str())
         );
+        eprintln!("   or: {} --embedded-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         return Err("Invalid arguments".into());
     }
 
@@ -657,5 +1002,211 @@ mod tests {
         // Check geodetic position is in reasonable range
         assert!((geodetic_pos.lat - 32.1236).abs() < 0.0001);
         assert!((geodetic_pos.lon - 45.4768).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_fixed_point_arithmetic() {
+        // Test basic fixed-point operations
+        let a = FixedPoint32::new(3.5, 16);
+        let b = FixedPoint32::new(2.25, 16);
+        
+        // Test conversion back to f64
+        assert!((a.to_f64() - 3.5).abs() < 1e-4);
+        assert!((b.to_f64() - 2.25).abs() < 1e-4);
+        
+        // Test addition
+        let sum = a.add(b);
+        assert!((sum.to_f64() - 5.75).abs() < 1e-4);
+        
+        // Test subtraction
+        let diff = a.sub(b);
+        assert!((diff.to_f64() - 1.25).abs() < 1e-4);
+        
+        // Test multiplication
+        let prod = a.mul(b);
+        assert!((prod.to_f64() - 7.875).abs() < 1e-3); // Allow slightly more error for multiplication
+    }
+
+    #[test]
+    fn test_local_position() {
+        let pos = LocalPosition::new(123.456, -78.9, 45.67);
+        
+        // Test conversion to meters
+        let (east, north, down) = pos.to_meters();
+        assert!((east - 123.456).abs() < 1e-3);
+        assert!((north - (-78.9)).abs() < 1e-3);
+        assert!((down - 45.67).abs() < 1e-3);
+        
+        // Test conversion to Vector3
+        let vec = pos.to_vector3();
+        assert!((vec.x - 123.456).abs() < 1e-3);
+        assert!((vec.y - (-78.9)).abs() < 1e-3);
+        assert!((vec.z - 45.67).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_compact_anchor_message() {
+        // Reset base timestamp for this test
+        CompactAnchorMessage::set_base_timestamp(0);
+        
+        let test_timestamp = 1723111199986u64;
+        let msg = CompactAnchorMessage::new(
+            42,
+            test_timestamp,
+            32.123456,
+            45.476789,
+            12.345,
+            200
+        );
+        
+        // Test that data is preserved with expected precision
+        // Copy values to avoid unaligned access to packed struct
+        let anchor_id = msg.anchor_id;
+        let quality = msg.quality;
+        assert_eq!(anchor_id, 42);
+        assert_eq!(msg.get_timestamp(), test_timestamp);
+        assert_eq!(quality, 200);
+        
+        let pos = msg.get_position();
+        assert!((pos.lat - 32.123456).abs() < 1e-6);
+        assert!((pos.lon - 45.476789).abs() < 1e-6);
+        assert!((pos.depth - 12.345).abs() < 1e-3); // mm precision
+        
+        // Test relative timestamp functionality
+        let msg2 = CompactAnchorMessage::new(
+            43,
+            test_timestamp + 14, // 14ms later
+            32.0,
+            45.0,
+            10.0,
+            255
+        );
+        
+        let timestamp2 = msg2.get_timestamp();
+        assert_eq!(timestamp2, test_timestamp + 14);
+        
+        // Test that relative timestamps work correctly
+        let relative_ts = msg2.timestamp_ms;
+        assert_eq!(relative_ts, 14); // Should be 14ms relative to base
+    }
+
+    #[test]
+    fn test_anchor_buffer() {
+        // Reset base timestamp for this test
+        CompactAnchorMessage::set_base_timestamp(0);
+        
+        let mut buffer: AnchorBuffer<4> = AnchorBuffer::new();
+        
+        // Test empty buffer
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.len(), 0);
+        
+        // Add messages with timestamps that work with the base timestamp system
+        let base_time = 2000000000u64; // Use a different base time to avoid conflicts
+        CompactAnchorMessage::set_base_timestamp(base_time);
+        
+        let msg1 = CompactAnchorMessage::new(1, base_time + 1000, 32.0, 45.0, 10.0, 255);
+        let msg2 = CompactAnchorMessage::new(2, base_time + 2000, 32.1, 45.1, 11.0, 254);
+        let msg3 = CompactAnchorMessage::new(3, base_time + 3000, 32.2, 45.2, 12.0, 253);
+        
+        buffer.push(msg1);
+        buffer.push(msg2);
+        buffer.push(msg3);
+        
+        assert_eq!(buffer.len(), 3);
+        assert!(!buffer.is_empty());
+        
+        // Test getting recent messages
+        let current_time = base_time + 4000;
+        let recent = buffer.get_recent_messages(5000, current_time);
+        let mut count = 0;
+        for msg in recent.iter() {
+            if msg.is_some() {
+                count += 1;
+            }
+        }
+        assert_eq!(count, 3); // All messages should be recent
+        
+        // Test age filtering - messages older than 1500ms from current_time should be filtered
+        // msg1 is 3000ms old, msg2 is 2000ms old, msg3 is 1000ms old
+        let recent_strict = buffer.get_recent_messages(1500, current_time);
+        let mut count_strict = 0;
+        for msg in recent_strict.iter() {
+            if msg.is_some() {
+                count_strict += 1;
+            }
+        }
+        // Only msg3 (1000ms old) should be within 1500ms threshold
+        assert_eq!(count_strict, 1);
+        
+        // Test circular buffer overflow
+        let msg4 = CompactAnchorMessage::new(4, base_time + 4000, 32.3, 45.3, 13.0, 252);
+        let msg5 = CompactAnchorMessage::new(5, base_time + 5000, 32.4, 45.4, 14.0, 251);
+        buffer.push(msg4);
+        buffer.push(msg5);
+        
+        assert_eq!(buffer.len(), 4); // Should be at capacity
+        
+        // Clear buffer
+        buffer.clear();
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_embedded_anchor_config() {
+        let config = EmbeddedAnchorConfig::new(123, 32.123, 45.456, 15.5, 1000.0);
+        
+        assert_eq!(config.id, 123);
+        assert!(config.enabled);
+        assert!((config.get_max_range_m() - 1000.0).abs() < 1e-3);
+        
+        let pos = config.position.get_position();
+        assert!((pos.lat - 32.123).abs() < 1e-6);
+        assert!((pos.lon - 45.456).abs() < 1e-6);
+        assert!((pos.depth - 15.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_embedded_system_config() {
+        let config = EmbeddedSystemConfig::new();
+        
+        // Test default values
+        assert_eq!(config.min_anchors, 3);
+        assert_eq!(config.position_timeout_ms, 200);
+        assert_eq!(config.max_anchor_age_ms, 5000);
+        
+        // Test conversions
+        assert!((config.get_sound_speed_m_per_s() - 1500.0).abs() < 1e-3);
+        assert!((config.get_accuracy_threshold_m() - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_memory_footprint() {
+        use std::mem;
+        
+        // Test that compact structures are indeed smaller
+        let compact_size = mem::size_of::<CompactAnchorMessage>();
+        let legacy_anchor_size = mem::size_of::<Anchor>();
+        let legacy_position_size = mem::size_of::<Position>();
+        
+        println!("CompactAnchorMessage size: {} bytes", compact_size);
+        println!("Legacy Anchor size: {} bytes", legacy_anchor_size);
+        println!("Legacy Position size: {} bytes", legacy_position_size);
+        
+        // CompactAnchorMessage should be significantly smaller than Anchor + Position
+        // CompactAnchorMessage: 2+4+4+4+2+1 = 17 bytes (plus padding)
+        // Anchor contains String + u64 + Position (3*f64) = String(24) + 8 + 24 = 56+ bytes
+        assert!(compact_size < 32); // Should be much smaller than legacy structures
+        
+        // Test LocalPosition size
+        let local_pos_size = mem::size_of::<LocalPosition>();
+        println!("LocalPosition size: {} bytes", local_pos_size);
+        assert_eq!(local_pos_size, 12); // 3 * i32 = 12 bytes
+        
+        // Test FixedPoint32 size
+        let fixed_point_size = mem::size_of::<FixedPoint32>();
+        println!("FixedPoint32 size: {} bytes", fixed_point_size);
+        assert_eq!(fixed_point_size, 8); // i32 + u8 + padding = 8 bytes
     }
 } 

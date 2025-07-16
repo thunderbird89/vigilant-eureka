@@ -2,6 +2,8 @@ use nalgebra::{Matrix3, Vector3};
 use serde::Deserialize;
 use std::f64::consts::PI;
 
+pub mod accuracy_validation;
+
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
 // Fixed-point arithmetic support for microcontrollers without FPU
@@ -671,12 +673,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     
+    // Check for accuracy validation mode
+    if args.len() == 2 && args[1] == "--accuracy-validation" {
+        println!("Running comprehensive accuracy validation tests...");
+        let validator = accuracy_validation::AccuracyValidator::new().with_trials(200);
+        let results = validator.run_validation();
+        let report = validator.generate_report(&results);
+        println!("{}", report);
+        
+        // Check if minimum requirements are met
+        let passing_configs = results.iter().filter(|r| r.meets_requirement).count();
+        if passing_configs == 0 {
+            eprintln!("ERROR: No configurations meet the 0.5m accuracy requirement!");
+            return Err("Accuracy validation failed".into());
+        }
+        
+        println!("Accuracy validation completed successfully!");
+        return Ok(());
+    }
+    
     if args.len() != 3 {
         eprintln!(
             "Usage: {} <json_file> <receiver_timestamp_ms>",
             args.get(0).map_or("trilateration", |s| s.as_str())
         );
         eprintln!("   or: {} --embedded-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
+        eprintln!("   or: {} --accuracy-validation", args.get(0).map_or("trilateration", |s| s.as_str()));
         return Err("Invalid arguments".into());
     }
 

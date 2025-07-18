@@ -1,0 +1,98 @@
+{
+  "system": {
+    "sound_speed_ms": 1530.0,
+    "max_anchor_age_ms": 60000,
+    "min_anchors": 3,
+    "position_timeout_ms": 300,
+    "accuracy_threshold_m": 1.5,
+    "max_computation_time_ms": 100,
+    "target_update_rate_hz": 5.0,
+    "memory_limit_bytes": 32768,
+    "debug_logging": false,
+    "coordinate_system": {
+      "reference_point": {
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "depth": 0.0
+      },
+      "earth_model": {
+        "semi_major_axis": 6378137.0,
+        "flattening": 0.0033528106647474805,
+        "eccentricity_squared": 0.00669437999014
+      },
+      "local_grid": null
+    },
+    "environmental_corrections": {
+      "auto_sound_speed_correction": true,
+      "default_temperature_c": 18.0,
+      "default_salinity_psu": 30.0,
+      "default_pressure_bar": 1.0,
+      "sound_speed_coefficients": {
+        "temperature": 4.0,
+        "salinity": 1.3,
+        "pressure": 0.16,
+        "temperature_salinity": -0.01,
+        "temperature_pressure": 0.0001,
+        "salinity_pressure": 0.0001
+      }
+    }
+  },
+  "anchors": [
+    {
+      "id": 102,
+      "position": {
+        "latitude": 32.124,
+        "longitude": -117.655,
+        "depth": 12.0
+      },
+      "max_range_m": 1200.0,
+      "enabled": true,
+      "quality_weight": 0.95,
+      "timeout_override_ms": 250,
+      "reference_signal_strength": 80,
+      "range_calibration_offset_m": 0.5
+    },
+    {
+      "id": 104,
+      "position": {
+        "latitude": 32.126,
+        "longitude": -117.657,
+        "depth": 15.0
+      },
+      "max_range_m": 1500.0,
+      "enabled": true,
+      "quality_weight": 1.0,
+      "timeout_override_ms": null,
+      "reference_signal_strength": 90,
+      "range_calibration_offset_m": 0.0
+    },
+    {
+      "id": 103,
+      "position": {
+        "latitude": 32.125,
+        "longitude": -117.656,
+        "depth": 8.0
+      },
+      "max_range_m": 800.0,
+      "enabled": true,
+      "quality_weight": 0.8,
+      "timeout_override_ms": null,
+      "reference_signal_strength": 75,
+      "range_calibration_offset_m": -0.2
+    },
+    {
+      "id": 101,
+      "position": {
+        "latitude": 32.123456,
+        "longitude": -117.654321,
+        "depth": 10.0
+      },
+      "max_range_m": 1000.0,
+      "enabled": true,
+      "quality_weight": 1.0,
+      "timeout_override_ms": null,
+      "reference_signal_strength": 85,
+      "range_calibration_offset_m": 0.0
+    }
+  ]
+}

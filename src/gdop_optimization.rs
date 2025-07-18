@@ -30,6 +30,8 @@ impl Default for GdopOptimizer {
             max_acceptable_gdop: 10.0,
             min_anchors: 4,
             max_anchors: 8,
+            gdop_thresholds: [2.0, 5.0, 10.0, 20.0, 50.0],
+            geometry_weight: 0.7,
         }
     }
 }
@@ -73,6 +75,8 @@ impl GdopOptimizer {
             max_acceptable_gdop: max_gdop,
             min_anchors: min_anchors.max(3), // At least 3 anchors required
             max_anchors: max_anchors,
+            gdop_thresholds: [2.0, 5.0, 10.0, 20.0, 50.0],
+            geometry_weight: 0.7,
         }
     }
 
@@ -375,6 +379,21 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
                     self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
                 }
             },
+            crate::advanced_trilateration::TrilaterationAlgorithm::MaximumLikelihood(_) => {
+                // Use MLE with default noise model
+                let weights = vec![1.0; anchors.len()];
+                self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
+            },
+            crate::advanced_trilateration::TrilaterationAlgorithm::RobustEstimation => {
+                // Use robust estimation
+                if anchors.len() >= 4 {
+                    let (pos, local, _) = self.robust_trilateration(anchors, receiver_time_ms)?;
+                    (pos, local, 0.0)
+                } else {
+                    let weights = vec![1.0; anchors.len()];
+                    self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
+                }
+            },
         };
         
         // Recalculate GDOP with final position for more accuracy
@@ -434,6 +453,21 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
                     (pos, local, 0.0)
                 } else {
                     // Fallback for 3 anchors
+                    let weights = vec![1.0; selected_anchors.len()];
+                    self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
+                }
+            },
+            crate::advanced_trilateration::TrilaterationAlgorithm::MaximumLikelihood(_) => {
+                // Use MLE with default noise model
+                let weights = vec![1.0; selected_anchors.len()];
+                self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
+            },
+            crate::advanced_trilateration::TrilaterationAlgorithm::RobustEstimation => {
+                // Use robust estimation
+                if selected_anchors.len() >= 4 {
+                    let (pos, local, _) = self.robust_trilateration(&selected_anchors, receiver_time_ms)?;
+                    (pos, local, 0.0)
+                } else {
                     let weights = vec![1.0; selected_anchors.len()];
                     self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
                 }

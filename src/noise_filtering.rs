@@ -505,7 +505,7 @@ impl AdaptiveSignalProcessor {
         let mut weight_sum = 0.0;
         
         for (pos, qual) in &self.position_history {
-            weighted_sum += pos * qual;
+            weighted_sum += pos * (*qual);
             weight_sum += qual;
         }
         

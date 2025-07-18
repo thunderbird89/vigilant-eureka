@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 /// Kalman filter for temporal position smoothing and prediction
 /// State vector: [x, y, z, vx, vy, vz] (position and velocity)
+#[derive(Clone)]
 pub struct PositionKalmanFilter {
     /// Current state estimate [position, velocity]
     pub state: Vector6<f64>,
@@ -372,7 +373,7 @@ impl MultiHypothesisKalmanFilter {
 
         let mut weighted_pos = Vector3::zeros();
         for (filter, weight) in self.filters.iter().zip(self.weights.iter()) {
-            weighted_pos += filter.get_position() * weight;
+            weighted_pos += filter.get_position() * (*weight);
         }
         
         weighted_pos

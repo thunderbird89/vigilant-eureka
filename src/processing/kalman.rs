@@ -1,5 +1,5 @@
 use nalgebra::{Matrix3, Matrix6, Vector3, Vector6, Matrix3x6};
-use crate::Position;
+use crate::core::Position;
 use std::time::{Duration, Instant};
 
 /// Kalman filter for temporal position smoothing and prediction

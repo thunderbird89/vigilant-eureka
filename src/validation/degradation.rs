@@ -1,6 +1,6 @@
-use crate::error_handling::{PositioningError, ErrorReporter, ErrorContext, SystemState, PositioningMode, PerformanceMetrics, EnvironmentalConditions, ErrorSeverity};
-use crate::message_parser::{AnchorMessage, GeodeticPosition};
-use crate::data_validator::{GeometryQuality};
+use crate::validation::error::{PositioningError, ErrorReporter, ErrorContext, SystemState, PositioningMode, PerformanceMetrics, EnvironmentalConditions, ErrorSeverity};
+use crate::processing::parser::{AnchorMessage, GeodeticPosition};
+use crate::validation::data::{GeometryQuality};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Serialize, Deserialize};
@@ -734,7 +734,7 @@ pub struct HealthReport {
     pub positioning_capability: PositioningCapability,
     pub anchor_health: HashMap<u16, AnchorHealth>,
     pub recent_snapshots: Vec<HealthSnapshot>,
-    pub error_summary: crate::error_handling::ErrorReport,
+    pub error_summary: crate::validation::error::ErrorReport,
     pub performance_metrics: PerformanceMetrics,
 }
 

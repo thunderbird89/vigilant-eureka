@@ -1,5 +1,5 @@
 use nalgebra::{Matrix3, Vector3, Matrix6, Vector6};
-use crate::{Anchor, Position, SPEED_OF_SOUND_WATER};
+use crate::core::{Anchor, Position, SPEED_OF_SOUND_WATER};
 use std::f64::consts::PI;
 
 /// High-precision coordinate transformations and error propagation for sub-meter accuracy

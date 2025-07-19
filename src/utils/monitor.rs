@@ -1,5 +1,5 @@
 use nalgebra::Vector3;
-use crate::accuracy_validation::{AccuracyValidator, PositionError, AccuracyStatistics};
+use crate::validation::accuracy::{AccuracyValidator, PositionError, AccuracyStatistics};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 

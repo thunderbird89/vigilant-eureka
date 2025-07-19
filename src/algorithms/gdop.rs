@@ -1,9 +1,6 @@
 use nalgebra::{Matrix4, Vector3, Vector4, DMatrix, DVector, Matrix3};
-use crate::{
-    Anchor, Position, 
-    GdopQuality, DilutionOfPrecision, AnchorGeometryAssessment,
-    advanced_trilateration::AdvancedTrilateration
-};
+use crate::core::{Anchor, Position};
+use crate::algorithms::trilateration::{GdopQuality, DilutionOfPrecision, AnchorGeometryAssessment, AdvancedTrilateration, TrilaterationAlgorithm};
 use std::cmp::Ordering;
 use std::f64::consts::PI;
 
@@ -271,8 +268,8 @@ impl GdopOptimizer {
     }
 
     /// Determine the best trilateration algorithm based on GDOP value
-    pub fn select_algorithm_by_gdop(&self, gdop: f64) -> crate::advanced_trilateration::TrilaterationAlgorithm {
-        use crate::advanced_trilateration::TrilaterationAlgorithm;
+    pub fn select_algorithm_by_gdop(&self, gdop: f64) -> TrilaterationAlgorithm {
+        use crate::algorithms::trilateration::TrilaterationAlgorithm;
         
         if gdop < 2.0 {
             // Excellent geometry - standard least squares is sufficient
@@ -352,23 +349,23 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
         
         // Perform trilateration with selected algorithm
         let (position, local_pos, _) = match algorithm {
-            crate::advanced_trilateration::TrilaterationAlgorithm::LinearLeastSquares => {
+            TrilaterationAlgorithm::LinearLeastSquares => {
                 // Simple least squares
                 let weights = vec![1.0; anchors.len()];
                 self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::WeightedLeastSquares => {
+            TrilaterationAlgorithm::WeightedLeastSquares => {
                 // Weight by inverse distance
                 let weights: Vec<f64> = ranges.iter()
                     .map(|&r| 1.0 / r.max(0.1))
                     .collect();
                 self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::LevenbergMarquardt => {
+            TrilaterationAlgorithm::LevenbergMarquardt => {
                 // Levenberg-Marquardt with centroid as initial guess
                 self.levenberg_marquardt_trilateration(anchors, receiver_time_ms, Some(centroid))?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::RobustMle => {
+            TrilaterationAlgorithm::RobustMle => {
                 // Robust MLE with outlier detection
                 if anchors.len() >= 4 {
                     let (pos, local, _) = self.robust_trilateration(anchors, receiver_time_ms)?;
@@ -379,12 +376,12 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
                     self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
                 }
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::MaximumLikelihood(_) => {
+            TrilaterationAlgorithm::MaximumLikelihood(_) => {
                 // Use MLE with default noise model
                 let weights = vec![1.0; anchors.len()];
                 self.weighted_least_squares_trilateration(anchors, receiver_time_ms, &weights)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::RobustEstimation => {
+            TrilaterationAlgorithm::RobustEstimation => {
                 // Use robust estimation
                 if anchors.len() >= 4 {
                     let (pos, local, _) = self.robust_trilateration(anchors, receiver_time_ms)?;
@@ -426,12 +423,12 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
         
         // Set algorithm and perform trilateration
         let (position, local_pos, _) = match algorithm {
-            crate::advanced_trilateration::TrilaterationAlgorithm::LinearLeastSquares => {
+            TrilaterationAlgorithm::LinearLeastSquares => {
                 // Simple least squares
                 let weights = vec![1.0; selected_anchors.len()];
                 self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::WeightedLeastSquares => {
+            TrilaterationAlgorithm::WeightedLeastSquares => {
                 // Create weights based on anchor quality
                 let weights: Vec<f64> = selection.selected_indices.iter()
                     .map(|&idx| {
@@ -442,11 +439,11 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
                     .collect();
                 self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::LevenbergMarquardt => {
+            TrilaterationAlgorithm::LevenbergMarquardt => {
                 // Levenberg-Marquardt with no initial guess
                 self.levenberg_marquardt_trilateration(&selected_anchors, receiver_time_ms, None)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::RobustMle => {
+            TrilaterationAlgorithm::RobustMle => {
                 // Robust MLE with outlier detection
                 if selected_anchors.len() >= 4 {
                     let (pos, local, _) = self.robust_trilateration(&selected_anchors, receiver_time_ms)?;
@@ -457,12 +454,12 @@ impl GdopOptimizedTrilateration for AdvancedTrilateration {
                     self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
                 }
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::MaximumLikelihood(_) => {
+            TrilaterationAlgorithm::MaximumLikelihood(_) => {
                 // Use MLE with default noise model
                 let weights = vec![1.0; selected_anchors.len()];
                 self.weighted_least_squares_trilateration(&selected_anchors, receiver_time_ms, &weights)?
             },
-            crate::advanced_trilateration::TrilaterationAlgorithm::RobustEstimation => {
+            TrilaterationAlgorithm::RobustEstimation => {
                 // Use robust estimation
                 if selected_anchors.len() >= 4 {
                     let (pos, local, _) = self.robust_trilateration(&selected_anchors, receiver_time_ms)?;

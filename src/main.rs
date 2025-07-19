@@ -1,64 +1,17 @@
-mod high_precision;
-mod accuracy_validation;
-mod optimization_cache;
-mod performance_monitor;
-mod noise_filtering;
-mod gdop_optimization;
-mod advanced_trilateration;
-mod kalman_filter;
-mod message_parser;
-mod data_validator;
-mod error_handling;
-mod graceful_degradation;
-mod configuration;
+use trilateration::core::{Position, Anchor, SPEED_OF_SOUND_WATER};
+use trilateration::algorithms::trilateration::{GdopQuality, DilutionOfPrecision, AnchorGeometryAssessment};
+use trilateration::algorithms::precision::{HighPrecisionTransformer, EnvironmentalCorrections};
+use trilateration::validation::accuracy::{AccuracyValidator, PositionError, AccuracyStatistics};
+use trilateration::processing::parser::{MessageParser, AnchorMessage, ParseError, MessageVersion, RawMessage, GeodeticPosition as ParserGeodeticPosition};
+use trilateration::utils::config::GeodeticPosition;
+use trilateration::validation::data::{DataValidator, ValidationConfig, ValidationError, ValidationResult, GeometryQuality};
+use trilateration::validation::error::{PositioningError, ErrorReporter, ErrorContext, SystemState, DiagnosticInfo, RecoveryStrategy};
+use trilateration::validation::degradation::{GracefulDegradationManager, SystemHealthMonitor, SystemHealth, PositioningCapability, DegradationDecision};
+use trilateration::utils::config::{ConfigurationManager, SystemConfig, AnchorConfig, ConfigError, ValidationResult as ConfigValidationResult, ParameterUpdates, ParameterUpdateResult, ParameterSummary, ConfigurationSnapshot};
+use trilateration::utils::monitor::PerformanceMonitor;
+use trilateration::processing::cache::OptimizationCache;
 
-// Structure definitions
-pub struct Position {
-    pub lat: f64,
-    pub lon: f64,
-    pub depth: f64,
-}
-
-impl Clone for Position {
-    fn clone(&self) -> Self {
-        Self {
-            lat: self.lat,
-            lon: self.lon,
-            depth: self.depth,
-        }
-    }
-}
-
-pub struct Anchor {
-    pub id: String,
-    pub timestamp: u64,
-    pub position: Position,
-}
-
-impl Clone for Anchor {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            timestamp: self.timestamp,
-            position: self.position.clone(),
-        }
-    }
-}
-
-// Import types from advanced_trilateration module
-pub use advanced_trilateration::{GdopQuality, DilutionOfPrecision, AnchorGeometryAssessment};
-
-// Re-export types from other modules for easier access
-pub use high_precision::{HighPrecisionTransformer, EnvironmentalCorrections};
-pub use accuracy_validation::{AccuracyValidator, PositionError, AccuracyStatistics};
-pub use message_parser::{MessageParser, AnchorMessage, GeodeticPosition, ParseError, MessageVersion, RawMessage};
-pub use data_validator::{DataValidator, ValidationConfig, ValidationError, ValidationResult, GeometryQuality};
-pub use error_handling::{PositioningError, ErrorReporter, ErrorContext, SystemState, DiagnosticInfo, RecoveryStrategy};
-pub use graceful_degradation::{GracefulDegradationManager, SystemHealthMonitor, SystemHealth, PositioningCapability, DegradationDecision};
-pub use configuration::{ConfigurationManager, SystemConfig, AnchorConfig, ConfigError, ValidationResult as ConfigValidationResult, ParameterUpdates, ParameterUpdateResult, ParameterSummary, ConfigurationSnapshot};
-
-// Constants
-pub const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s in standard conditions
+// Main demo application for the underwater positioning system
 
 // Main function
 fn main() {
@@ -86,8 +39,8 @@ fn main() {
 // Sub-meter accuracy optimization demo
 pub fn submeter_accuracy_optimization_demo() {
     use crate::{HighPrecisionTransformer, EnvironmentalCorrections, AccuracyValidator};
-    use crate::performance_monitor::PerformanceMonitor;
-    use crate::optimization_cache::OptimizationCache;
+    use crate::PerformanceMonitor;
+    use crate::OptimizationCache;
     use nalgebra::Vector3;
     
     println!("=== SUB-METER ACCURACY OPTIMIZATION DEMO ===\n");
@@ -489,7 +442,7 @@ pub fn message_parsing_validation_demo() {
     
     // Create a sequence of messages from the same anchor to test historical validation
     let anchor_id = 201;
-    let base_pos = GeodeticPosition {
+    let base_pos = ParserGeodeticPosition {
         latitude: 32.130000,
         longitude: -117.660000,
         depth: 25.0,
@@ -509,7 +462,7 @@ pub fn message_parsing_validation_demo() {
     let msg2 = crate::AnchorMessage {
         anchor_id,
         timestamp_ms: current_time - 4000,
-        position: GeodeticPosition {
+        position: ParserGeodeticPosition {
             latitude: base_pos.latitude + 0.0001, // Small movement
             longitude: base_pos.longitude + 0.0001,
             depth: base_pos.depth + 0.5,
@@ -523,7 +476,7 @@ pub fn message_parsing_validation_demo() {
     let msg3 = crate::AnchorMessage {
         anchor_id,
         timestamp_ms: current_time - 3000,
-        position: GeodeticPosition {
+        position: ParserGeodeticPosition {
             latitude: base_pos.latitude + 0.01, // Large jump (~1km)
             longitude: base_pos.longitude + 0.01,
             depth: base_pos.depth,
@@ -614,7 +567,7 @@ pub fn message_parsing_validation_demo() {
     let test_message = crate::AnchorMessage {
         anchor_id: 999,
         timestamp_ms: current_time,
-        position: GeodeticPosition {
+        position: ParserGeodeticPosition {
             latitude: 32.0,
             longitude: -117.0,
             depth: 10.0,
@@ -639,7 +592,7 @@ pub fn message_parsing_validation_demo() {
 // Configuration management demo
 pub fn configuration_management_demo() {
     use crate::{ConfigurationManager, SystemConfig, AnchorConfig, ParameterUpdates};
-    use crate::configuration::GeodeticPosition;
+    use crate::GeodeticPosition;
     
     println!("=== CONFIGURATION MANAGEMENT DEMO ===\n");
     
@@ -969,8 +922,8 @@ fn create_test_v2_message(anchor_id: u16, timestamp: u64, lat: f64, lon: f64, de
 // Error handling and graceful degradation demo
 pub fn error_handling_graceful_degradation_demo() {
     use crate::{ErrorReporter, GracefulDegradationManager, SystemHealthMonitor};
-    use crate::error_handling::{PositioningError, ErrorContext, SystemState, PositioningMode, PerformanceMetrics, EnvironmentalConditions};
-    use crate::graceful_degradation::{SystemHealth, PositioningCapability, DegradationAction};
+    use trilateration::validation::error::{PositioningMode, PerformanceMetrics, EnvironmentalConditions, GeometryIssue, ComputationErrorCode, ResolutionStatus};
+    use trilateration::validation::degradation::{DegradationAction};
     
     println!("=== ERROR HANDLING AND GRACEFUL DEGRADATION DEMO ===\n");
     
@@ -1032,7 +985,7 @@ pub fn error_handling_graceful_degradation_demo() {
                 (102, 32.124, -117.655, 10.1),
                 (103, 32.125, -117.656, 10.2),
             ],
-            geometry_type: crate::error_handling::GeometryIssue::Collinear,
+            geometry_type: GeometryIssue::Collinear,
         },
         PositioningError::AnchorTimeout {
             anchor_id: 103,
@@ -1041,7 +994,7 @@ pub fn error_handling_graceful_degradation_demo() {
         },
         PositioningError::ComputationFailure {
             operation: "Matrix inversion".to_string(),
-            error_code: crate::error_handling::ComputationErrorCode::NumericalInstability,
+            error_code: ComputationErrorCode::NumericalInstability,
             context: "Singular matrix in trilateration".to_string(),
         },
     ];
@@ -1071,7 +1024,7 @@ pub fn error_handling_graceful_degradation_demo() {
     if let Some(&first_error_id) = error_ids.first() {
         error_reporter.update_resolution_status(
             first_error_id, 
-            crate::error_handling::ResolutionStatus::Resolved
+            ResolutionStatus::Resolved
         );
         println!("   Marked error {} as resolved", first_error_id);
         
@@ -1095,7 +1048,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 101,
             timestamp_ms: current_time - 1000,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.123456,
                 longitude: -117.654321,
                 depth: 10.0,
@@ -1107,7 +1060,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 102,
             timestamp_ms: current_time - 800,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.124000,
                 longitude: -117.655000,
                 depth: 12.0,
@@ -1119,7 +1072,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 103,
             timestamp_ms: current_time - 1200,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.125000,
                 longitude: -117.656000,
                 depth: 8.0,
@@ -1162,7 +1115,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 104,
             timestamp_ms: current_time - 500,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.126000,
                 longitude: -117.657000,
                 depth: 15.0,
@@ -1174,7 +1127,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 105,
             timestamp_ms: current_time - 300,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.127000,
                 longitude: -117.658000,
                 depth: 18.0,
@@ -1262,7 +1215,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 101,
             timestamp_ms: current_time,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.123456,
                 longitude: -117.654321,
                 depth: 10.0,
@@ -1274,7 +1227,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 102,
             timestamp_ms: current_time - 100,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.124000,
                 longitude: -117.655000,
                 depth: 12.0,
@@ -1286,7 +1239,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 103,
             timestamp_ms: current_time - 200,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.125000,
                 longitude: -117.656000,
                 depth: 8.0,
@@ -1298,7 +1251,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 104,
             timestamp_ms: current_time - 150,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.126000,
                 longitude: -117.657000,
                 depth: 15.0,
@@ -1310,7 +1263,7 @@ pub fn error_handling_graceful_degradation_demo() {
         AnchorMessage {
             anchor_id: 105,
             timestamp_ms: current_time - 50,
-            position: GeodeticPosition {
+            position: ParserGeodeticPosition {
                 latitude: 32.127000,
                 longitude: -117.658000,
                 depth: 18.0,

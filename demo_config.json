@@ -53,6 +53,20 @@
       "range_calibration_offset_m": 0.5
     },
     {
+      "id": 101,
+      "position": {
+        "latitude": 32.123456,
+        "longitude": -117.654321,
+        "depth": 10.0
+      },
+      "max_range_m": 1000.0,
+      "enabled": true,
+      "quality_weight": 1.0,
+      "timeout_override_ms": null,
+      "reference_signal_strength": 85,
+      "range_calibration_offset_m": 0.0
+    },
+    {
       "id": 104,
       "position": {
         "latitude": 32.126,
@@ -79,20 +93,6 @@
       "timeout_override_ms": null,
       "reference_signal_strength": 75,
       "range_calibration_offset_m": -0.2
-    },
-    {
-      "id": 101,
-      "position": {
-        "latitude": 32.123456,
-        "longitude": -117.654321,
-        "depth": 10.0
-      },
-      "max_range_m": 1000.0,
-      "enabled": true,
-      "quality_weight": 1.0,
-      "timeout_override_ms": null,
-      "reference_signal_strength": 85,
-      "range_calibration_offset_m": 0.0
     }
   ]
 }

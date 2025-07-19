@@ -1,5 +1,5 @@
 use nalgebra::{Vector3, Matrix3};
-use crate::{Anchor, Position, SPEED_OF_SOUND_WATER};
+use crate::core::{Anchor, Position, SPEED_OF_SOUND_WATER};
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 

@@ -1,6 +1,6 @@
 use nalgebra::{Matrix3, Vector3, DMatrix, DVector, Matrix4};
-use crate::{Anchor, Position, SPEED_OF_SOUND_WATER};
-use crate::kalman_filter::PositionKalmanFilter;
+use crate::core::{Anchor, Position, SPEED_OF_SOUND_WATER};
+use crate::processing::kalman::PositionKalmanFilter;
 use std::f64::consts::PI;
 use std::cmp::Ordering;
 

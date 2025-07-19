@@ -1,4 +1,4 @@
-use crate::message_parser::{AnchorMessage, GeodeticPosition};
+use crate::processing::parser::{AnchorMessage, GeodeticPosition};
 use std::collections::HashMap;
 use std::fmt;
 use serde::{Serialize, Deserialize};

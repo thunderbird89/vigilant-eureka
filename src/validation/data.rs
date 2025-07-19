@@ -476,7 +476,7 @@ impl Default for DataValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message_parser::MessageVersion;
+    use crate::processing::parser::MessageVersion;
 
     fn create_test_message(anchor_id: u16, timestamp: u64, lat: f64, lon: f64, depth: f64, quality: u8) -> AnchorMessage {
         AnchorMessage {

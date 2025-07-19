@@ -2,8 +2,16 @@
 name = "trilateration"
 version = "0.1.0"
 edition = "2021"
+description = "High-precision underwater positioning system using acoustic trilateration"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "underwater-positioning-demo"
+path = "src/main.rs"
 
 [dependencies]
 nalgebra = "0.33"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0" 
+serde_json = "1.0"
+rand = "0.8"
+rand_distr = "0.4"

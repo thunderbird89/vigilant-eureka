@@ -6,6 +6,9 @@ pub mod embedded_coordinates;
 pub mod gdop;
 pub mod precision;
 
+#[cfg(test)]
+pub mod tests;
+
 pub use trilateration::AdvancedTrilateration;
 pub use gdop::GdopOptimizer;
 pub use precision::HighPrecisionTransformer;

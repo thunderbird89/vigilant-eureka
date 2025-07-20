@@ -1,7 +1,7 @@
 //! Core data types for the positioning system
 
 /// 3D position in geodetic coordinates
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
     pub lat: f64,
     pub lon: f64,

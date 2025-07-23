@@ -13,6 +13,8 @@ pub mod transceiver_demo;
 pub mod advanced_positioning;
 pub mod error_handling;
 pub mod graceful_degradation;
+pub mod coordinate_system;
+pub mod coordinate_system_demo;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -745,6 +747,11 @@ pub fn message_parsing_system_demo() {
 pub fn transceiver_communication_demo() {
     transceiver_demo::transceiver_interface_demo();
     transceiver_demo::transceiver_performance_test();
+}
+
+/// Demonstration of coordinate system management with optimized transformations
+pub fn coordinate_system_management_demo() {
+    coordinate_system_demo::coordinate_system_demo();
 }
 
 /// Demonstration of comprehensive error handling and graceful degradation

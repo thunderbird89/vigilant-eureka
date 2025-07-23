@@ -5,6 +5,7 @@ use std::f64::consts::PI;
 pub mod accuracy_validation;
 pub mod performance_monitor;
 pub mod optimization_cache;
+pub mod config;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 

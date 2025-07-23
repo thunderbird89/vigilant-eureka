@@ -10,6 +10,7 @@ pub mod message_parser;
 pub mod message_parser_demo;
 pub mod transceiver_interface;
 pub mod transceiver_demo;
+pub mod advanced_positioning;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -744,6 +745,443 @@ pub fn transceiver_communication_demo() {
     transceiver_demo::transceiver_performance_test();
 }
 
+/// Demonstration of advanced positioning accuracy improvements
+pub fn advanced_positioning_demo() {
+    use advanced_positioning::{AdvancedPositioningEngine, enhanced_trilaterate};
+    
+    println!("=== ADVANCED POSITIONING ALGORITHMS DEMO ===\n");
+    
+    // Create test anchor data with some noise and 3D geometry
+    let base_time = 1723111199000u64;
+    let test_anchors = vec![
+        Anchor {
+            id: "001".to_string(),
+            timestamp: base_time + 986,
+            position: Position { lat: 32.12345, lon: 45.47675, depth: 0.0 },
+        },
+        Anchor {
+            id: "002".to_string(),
+            timestamp: base_time + 988,
+            position: Position { lat: 32.12365, lon: 45.47695, depth: 5.0 }, // Add depth variation
+        },
+        Anchor {
+            id: "003".to_string(),
+            timestamp: base_time + 988,
+            position: Position { lat: 32.12365, lon: 45.47655, depth: 10.0 }, // Add depth variation
+        },
+        Anchor {
+            id: "004".to_string(),
+            timestamp: base_time + 986,
+            position: Position { lat: 32.12385, lon: 45.47675, depth: 15.0 }, // Add depth variation
+        },
+        // Add a potential outlier anchor
+        Anchor {
+            id: "005".to_string(),
+            timestamp: base_time + 1200, // Much later timestamp (potential outlier)
+            position: Position { lat: 32.12400, lon: 45.47700, depth: 20.0 },
+        },
+    ];
+    
+    let receiver_time = base_time + 1000;
+    let reference_pos = &test_anchors[0].position;
+    
+    println!("1. STANDARD TRILATERATION (for comparison)");
+    match trilaterate(&test_anchors[0..4], receiver_time) {
+        Ok((pos, local_pos)) => {
+            println!("   Standard result: lat={:.6}, lon={:.6}, depth={:.2}m", 
+                     pos.lat, pos.lon, pos.depth);
+            println!("   Local position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     local_pos.x, local_pos.y, local_pos.z);
+        }
+        Err(e) => println!("   Standard trilateration failed: {}", e),
+    }
+    
+    println!("\n2. ENHANCED TRILATERATION WITH ADVANCED ALGORITHMS");
+    match enhanced_trilaterate(&test_anchors[0..4], receiver_time, reference_pos) {
+        Ok((pos, local_pos, uncertainty)) => {
+            println!("   Enhanced result: lat={:.6}, lon={:.6}, depth={:.2}m", 
+                     pos.lat, pos.lon, pos.depth);
+            println!("   Local position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     local_pos.x, local_pos.y, local_pos.z);
+            println!("   Uncertainty estimate: {:.3}m", uncertainty);
+        }
+        Err(e) => println!("   Enhanced trilateration failed: {}", e),
+    }
+    
+    println!("\n3. INDIVIDUAL ALGORITHM TESTING");
+    let mut engine = AdvancedPositioningEngine::new();
+    
+    // Test Maximum Likelihood Estimator
+    println!("   a) Maximum Likelihood Estimator:");
+    match engine.trilaterate_mle(&test_anchors[0..4], receiver_time, 1.0) {
+        Ok(result) => {
+            println!("      Position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     result.position.x, result.position.y, result.position.z);
+            println!("      Uncertainty: {:.3}m, Log-likelihood: {:.2}", 
+                     result.uncertainty, result.log_likelihood);
+            println!("      Iterations: {}", result.iterations);
+        }
+        Err(e) => println!("      MLE failed: {}", e),
+    }
+    
+    // Test Levenberg-Marquardt optimization
+    println!("   b) Levenberg-Marquardt Optimization:");
+    match engine.trilaterate_levenberg_marquardt(&test_anchors[0..4], receiver_time) {
+        Ok(result) => {
+            println!("      Position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     result.position.x, result.position.y, result.position.z);
+            println!("      Residual norm: {:.3}, Iterations: {}, Converged: {}", 
+                     result.residual_norm, result.iterations, result.converged);
+        }
+        Err(e) => println!("      LM optimization failed: {}", e),
+    }
+    
+    // Test Weighted Least Squares
+    println!("   c) Weighted Least Squares:");
+    match engine.trilaterate_weighted_least_squares(&test_anchors[0..4], receiver_time) {
+        Ok((position, uncertainty)) => {
+            println!("      Position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     position.x, position.y, position.z);
+            println!("      Uncertainty: {:.3}m", uncertainty);
+        }
+        Err(e) => println!("      Weighted LS failed: {}", e),
+    }
+    
+    // Test Robust Estimation (with outlier)
+    println!("   d) Robust Estimation (with potential outlier):");
+    match engine.trilaterate_robust(&test_anchors[0..4], receiver_time) {
+        Ok((position, uncertainty)) => {
+            println!("      Position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     position.x, position.y, position.z);
+            println!("      Uncertainty: {:.3}m", uncertainty);
+        }
+        Err(e) => println!("      Robust estimation failed: {}", e),
+    }
+    
+    println!("\n4. GDOP OPTIMIZATION AND ANALYSIS");
+    use advanced_positioning::{GDOPAnalyzer, GeometryQuality};
+    
+    let mut gdop_analyzer = GDOPAnalyzer::new();
+    
+    // Convert anchors to local coordinates for GDOP analysis
+    let anchor_positions: Vec<Vector3<f64>> = test_anchors[0..4].iter()
+        .map(|anchor| geodetic_to_local(&anchor.position, reference_pos))
+        .collect();
+    
+    // Estimate position for GDOP calculation (use centroid of anchors as initial estimate)
+    let estimated_position = {
+        let centroid = anchor_positions.iter().fold(Vector3::zeros(), |acc, pos| acc + pos) / anchor_positions.len() as f64;
+        Vector3::new(centroid.x + 10.0, centroid.y + 10.0, centroid.z + 5.0) // Offset from centroid
+    };
+    
+    // Calculate GDOP metrics
+    match gdop_analyzer.calculate_gdop(&anchor_positions, &estimated_position) {
+        Ok(gdop_result) => {
+            println!("   GDOP Analysis Results:");
+            println!("      GDOP: {:.2}", gdop_result.gdop);
+            println!("      PDOP: {:.2}", gdop_result.pdop);
+            println!("      HDOP: {:.2}", gdop_result.hdop);
+            println!("      VDOP: {:.2}", gdop_result.vdop);
+            println!("      Geometry Quality: {:?}", gdop_result.geometry_quality);
+            
+            // Test geometry quality assessment
+            match gdop_analyzer.assess_geometry_quality(&anchor_positions, &estimated_position) {
+                Ok(quality_score) => {
+                    println!("      Geometry Quality Score: {:.3} (0-1, higher is better)", quality_score);
+                }
+                Err(e) => println!("      Geometry assessment failed: {}", e),
+            }
+            
+            // Test position uncertainty estimation
+            match gdop_analyzer.estimate_position_uncertainty(&anchor_positions, &estimated_position, 0.5) {
+                Ok((overall_uncertainty, directional_uncertainty)) => {
+                    println!("      Position Uncertainty:");
+                    println!("         Overall: {:.2}m", overall_uncertainty);
+                    println!("         East: {:.2}m, North: {:.2}m, Down: {:.2}m", 
+                             directional_uncertainty.x, directional_uncertainty.y, directional_uncertainty.z);
+                }
+                Err(e) => println!("      Uncertainty estimation failed: {}", e),
+            }
+            
+            // Test algorithm selection
+            let recommended_algorithm = gdop_analyzer.select_algorithm_for_gdop(gdop_result.gdop);
+            println!("      Recommended Algorithm: {}", recommended_algorithm);
+        }
+        Err(e) => println!("   GDOP calculation failed: {}", e),
+    }
+    
+    // Test anchor selection optimization
+    println!("   Anchor Selection Optimization:");
+    match gdop_analyzer.select_optimal_anchors(&test_anchors[0..4], receiver_time, 3) {
+        Ok(selection_result) => {
+            println!("      Selected anchors: {:?}", selection_result.selected_anchors);
+            println!("      Expected GDOP: {:.2}", selection_result.gdop);
+            println!("      Expected accuracy: {:.2}m", selection_result.expected_accuracy);
+            println!("      Geometry quality: {:?}", selection_result.geometry_quality);
+        }
+        Err(e) => println!("      Anchor selection failed: {}", e),
+    }
+    
+    // Test GDOP-optimized trilateration
+    println!("   GDOP-Optimized Trilateration:");
+    match engine.trilaterate_with_gdop_optimization(&test_anchors[0..4], receiver_time) {
+        Ok((position, uncertainty, gdop_result)) => {
+            println!("      Position: east={:.2}m, north={:.2}m, down={:.2}m", 
+                     position.x, position.y, position.z);
+            println!("      Uncertainty: {:.3}m", uncertainty);
+            println!("      GDOP: {:.2}, Quality: {:?}", gdop_result.gdop, gdop_result.geometry_quality);
+        }
+        Err(e) => println!("      GDOP-optimized trilateration failed: {}", e),
+    }
+
+    println!("\n5. ADVANCED NOISE FILTERING AND SIGNAL PROCESSING");
+    use advanced_positioning::{SignalProcessor, EnvironmentalParams, WeightedMeasurement};
+    
+    let mut signal_processor = SignalProcessor::new();
+    
+    // Create test measurements with noise and multipath effects
+    let test_measurements = vec![
+        WeightedMeasurement {
+            anchor_position: Vector3::new(0.0, 0.0, 0.0),
+            measured_distance: 100.0,
+            weight: 1.0,
+            quality: 0.9,
+        },
+        WeightedMeasurement {
+            anchor_position: Vector3::new(100.0, 0.0, 5.0),
+            measured_distance: 105.2, // With some noise
+            weight: 1.0,
+            quality: 0.7,
+        },
+        WeightedMeasurement {
+            anchor_position: Vector3::new(0.0, 100.0, 10.0),
+            measured_distance: 98.5, // With some noise
+            weight: 1.0,
+            quality: 0.8,
+        },
+        WeightedMeasurement {
+            anchor_position: Vector3::new(100.0, 100.0, 15.0),
+            measured_distance: 142.8, // With multipath effect
+            weight: 1.0,
+            quality: 0.4, // Lower quality due to multipath
+        },
+    ];
+    
+    let signal_qualities = vec![0.9, 0.7, 0.8, 0.4];
+    
+    // Test adaptive noise filtering
+    println!("   Adaptive Noise Filtering:");
+    let filtered_measurements = signal_processor.adaptive_noise_filter(&test_measurements, &signal_qualities);
+    for (i, filtered) in filtered_measurements.iter().enumerate() {
+        println!("      Anchor {}: Original={:.1}m, Filtered={:.1}m, Confidence={:.2}, Multipath={}",
+                 i, test_measurements[i].measured_distance, filtered.filtered_range, 
+                 filtered.confidence, filtered.multipath_detected);
+    }
+    
+    // Test multipath detection and mitigation
+    println!("   Multipath Detection and Mitigation:");
+    let range_measurements = vec![100.0, 101.0, 99.5, 120.0, 102.0, 100.5]; // Spike at index 3
+    let timestamps = vec![1000, 1100, 1200, 1300, 1400, 1500];
+    let corrected_ranges = signal_processor.detect_and_mitigate_multipath(1, &range_measurements, &timestamps);
+    
+    for (i, (&original, &corrected)) in range_measurements.iter().zip(corrected_ranges.iter()).enumerate() {
+        println!("      Time {}: Original={:.1}m, Corrected={:.1}m, Difference={:.1}m",
+                 timestamps[i], original, corrected, original - corrected);
+    }
+    
+    // Test systematic error compensation
+    println!("   Systematic Error Compensation:");
+    let env_params = EnvironmentalParams {
+        sound_speed: 1520.0, // Slightly different from default
+        temperature: 20.0,
+        salinity: 32.0,
+        pressure: 2.0,
+        current_velocity: Vector3::new(0.1, 0.0, 0.0),
+    };
+    
+    let raw_measurements = vec![100.0, 150.0, 200.0, 250.0];
+    let anchor_positions = vec![
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(100.0, 0.0, 5.0),
+        Vector3::new(0.0, 100.0, 10.0),
+        Vector3::new(100.0, 100.0, 15.0),
+    ];
+    
+    let compensated_measurements = signal_processor.compensate_systematic_errors(
+        &raw_measurements, &anchor_positions, &env_params
+    );
+    
+    for (i, (&raw, &compensated)) in raw_measurements.iter().zip(compensated_measurements.iter()).enumerate() {
+        println!("      Anchor {}: Raw={:.2}m, Compensated={:.2}m, Correction={:.3}m",
+                 i, raw, compensated, compensated - raw);
+    }
+    
+    // Test temporal jitter filtering
+    println!("   Temporal Jitter Filtering:");
+    let noisy_measurements = vec![100.0, 102.5, 99.8, 101.2, 100.3, 99.9, 100.7];
+    let mut filtered_values = Vec::new();
+    
+    for (i, &measurement) in noisy_measurements.iter().enumerate() {
+        let timestamp = 1000 + (i as u64 * 100);
+        let filtered = signal_processor.temporal_jitter_filter(0, measurement, timestamp);
+        filtered_values.push(filtered);
+        println!("      Step {}: Noisy={:.1}m, Filtered={:.1}m", i + 1, measurement, filtered);
+    }
+    
+    // Test signal quality weighting
+    println!("   Signal Quality Weighting:");
+    let test_ranges = vec![100.0, 105.0, 98.0, 142.0];
+    let test_qualities = vec![0.9, 0.7, 0.8, 0.3];
+    let weights = signal_processor.compute_signal_quality_weights(&test_ranges, &test_qualities);
+    
+    for (i, (&quality, &weight)) in test_qualities.iter().zip(weights.iter()).enumerate() {
+        println!("      Anchor {}: Quality={:.1}, Weight={:.3}", i, quality, weight);
+    }
+
+    println!("\n6. SUB-METER ACCURACY OPTIMIZATION");
+    use advanced_positioning::{SubMeterAccuracyOptimizer, AnchorCalibration, ClockCalibration};
+    
+    let mut sub_meter_optimizer = SubMeterAccuracyOptimizer::new(reference_pos.clone());
+    
+    // Add calibration data for improved accuracy
+    sub_meter_optimizer.add_anchor_calibration(0, AnchorCalibration {
+        position_offset: Vector3::new(0.05, -0.03, 0.02), // Small position corrections
+        range_bias: 0.1,  // 10cm range bias correction
+        uncertainty: 0.05, // 5cm uncertainty
+    });
+    
+    sub_meter_optimizer.add_anchor_calibration(1, AnchorCalibration {
+        position_offset: Vector3::new(-0.02, 0.04, -0.01),
+        range_bias: -0.08,
+        uncertainty: 0.04,
+    });
+    
+    sub_meter_optimizer.add_clock_calibration(0, ClockCalibration {
+        time_offset: 0.001,  // 1ms clock offset
+        drift_rate: 1e-6,    // 1 microsecond per second drift
+        uncertainty: 0.0005, // 0.5ms uncertainty
+    });
+    
+    // Test sub-meter optimization
+    println!("   High-Precision Positioning with Sub-Meter Optimization:");
+    
+    // Create high-quality test measurements
+    let high_precision_measurements = vec![
+        WeightedMeasurement {
+            anchor_position: Vector3::new(0.0, 0.0, 0.0),
+            measured_distance: 100.15,  // More precise measurements
+            weight: 1.0,
+            quality: 0.95,
+        },
+        WeightedMeasurement {
+            anchor_position: Vector3::new(100.0, 0.0, 5.0),
+            measured_distance: 105.23,
+            weight: 1.0,
+            quality: 0.92,
+        },
+        WeightedMeasurement {
+            anchor_position: Vector3::new(0.0, 100.0, 10.0),
+            measured_distance: 98.47,
+            weight: 1.0,
+            quality: 0.88,
+        },
+        WeightedMeasurement {
+            anchor_position: Vector3::new(100.0, 100.0, 15.0),
+            measured_distance: 142.13,
+            weight: 1.0,
+            quality: 0.85,
+        },
+    ];
+    
+    let high_precision_env = EnvironmentalParams {
+        sound_speed: 1518.5,  // More precise sound speed
+        temperature: 18.2,
+        salinity: 34.7,
+        pressure: 1.8,
+        current_velocity: Vector3::new(0.05, -0.02, 0.01),
+    };
+    
+    match sub_meter_optimizer.optimize_for_sub_meter_accuracy(
+        &high_precision_measurements, 
+        &high_precision_env, 
+        receiver_time
+    ) {
+        Ok(result) => {
+            println!("      Optimized Position:");
+            println!("         Local: east={:.3}m, north={:.3}m, down={:.3}m", 
+                     result.position.x, result.position.y, result.position.z);
+            println!("         Geodetic: lat={:.7}, lon={:.7}, depth={:.3}m", 
+                     result.geodetic_position.lat, result.geodetic_position.lon, result.geodetic_position.depth);
+            
+            println!("      Accuracy Estimate:");
+            println!("         Horizontal: {:.3}m (95% confidence)", result.accuracy_estimate.horizontal_accuracy);
+            println!("         Vertical: {:.3}m (95% confidence)", result.accuracy_estimate.vertical_accuracy);
+            println!("         Overall: {:.3}m (95% confidence)", result.accuracy_estimate.overall_accuracy);
+            
+            println!("      Accuracy Components:");
+            println!("         Measurement noise: {:.3}m", result.accuracy_estimate.accuracy_components.measurement_noise);
+            println!("         Geometric dilution: {:.3}m", result.accuracy_estimate.accuracy_components.geometric_dilution);
+            println!("         Systematic errors: {:.3}m", result.accuracy_estimate.accuracy_components.systematic_errors);
+            println!("         Environmental effects: {:.3}m", result.accuracy_estimate.accuracy_components.environmental_effects);
+            println!("         Calibration uncertainty: {:.3}m", result.accuracy_estimate.accuracy_components.calibration_uncertainty);
+            
+            println!("      Confidence Intervals (95%):");
+            println!("         East: [{:.3}, {:.3}]m", result.confidence_interval.east_95.0, result.confidence_interval.east_95.1);
+            println!("         North: [{:.3}, {:.3}]m", result.confidence_interval.north_95.0, result.confidence_interval.north_95.1);
+            println!("         Down: [{:.3}, {:.3}]m", result.confidence_interval.down_95.0, result.confidence_interval.down_95.1);
+            
+            println!("      Validation Status: {:?}", result.validation_status);
+            
+            println!("      Applied Corrections:");
+            println!("         Sound speed: {:.3}m", result.correction_summary.sound_speed_correction);
+            println!("         Temperature: {:.3}m", result.correction_summary.temperature_correction);
+            println!("         Pressure: {:.3}m", result.correction_summary.pressure_correction);
+            println!("         Clock bias: {:.3}m", result.correction_summary.clock_bias_correction);
+            println!("         Systematic bias: {:.3}m", result.correction_summary.systematic_bias_correction);
+            println!("         Total correction magnitude: {:.3}m", result.correction_summary.total_correction_magnitude);
+            
+            // Check if sub-meter accuracy achieved
+            if result.accuracy_estimate.overall_accuracy < 1.0 {
+                println!("      ✓ SUB-METER ACCURACY ACHIEVED!");
+            } else {
+                println!("      ⚠ Sub-meter accuracy not achieved (accuracy: {:.3}m)", result.accuracy_estimate.overall_accuracy);
+            }
+        }
+        Err(e) => println!("      Sub-meter optimization failed: {}", e),
+    }
+
+    println!("\n7. KALMAN FILTERING DEMONSTRATION");
+    let mut filter_engine = AdvancedPositioningEngine::new();
+    
+    // Simulate a sequence of position measurements
+    let measurements = vec![
+        (Vector3::new(10.0, 20.0, 5.0), 1.0, base_time + 1000),
+        (Vector3::new(10.2, 20.1, 5.1), 1.2, base_time + 1100),
+        (Vector3::new(10.1, 19.9, 4.9), 0.8, base_time + 1200),
+        (Vector3::new(10.3, 20.2, 5.2), 1.5, base_time + 1300),
+        (Vector3::new(9.9, 19.8, 4.8), 0.9, base_time + 1400),
+    ];
+    
+    println!("   Kalman filter smoothing results:");
+    for (i, (measurement, uncertainty, timestamp)) in measurements.iter().enumerate() {
+        let filtered = filter_engine.update_kalman_filter(*measurement, *uncertainty, *timestamp);
+        filter_engine.add_position_measurement(*measurement, *uncertainty, *timestamp, 4, 0.8);
+        
+        println!("      Step {}: Raw=({:.1}, {:.1}, {:.1}), Filtered=({:.1}, {:.1}, {:.1})", 
+                 i + 1,
+                 measurement.x, measurement.y, measurement.z,
+                 filtered.x, filtered.y, filtered.z);
+    }
+    
+    // Test temporal filtering
+    if let Some(temporal_filtered) = filter_engine.get_filtered_position(base_time + 1500) {
+        println!("   Temporal filtered position: ({:.1}, {:.1}, {:.1})", 
+                 temporal_filtered.x, temporal_filtered.y, temporal_filtered.z);
+    }
+    
+    println!("\n=== Advanced positioning algorithms demonstration complete ===");
+}
+
 /// Demonstration of performance monitoring and optimization features
 pub fn performance_optimization_demo() {
     use performance_monitor::{PerformanceMonitor, PerformanceConstraints};
@@ -946,6 +1384,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     
+    // Check for advanced positioning demo mode
+    if args.len() == 2 && args[1] == "--advanced-positioning-demo" {
+        advanced_positioning_demo();
+        return Ok(());
+    }
+    
     if args.len() != 3 {
         eprintln!(
             "Usage: {} <json_file> <receiver_timestamp_ms>",
@@ -956,6 +1400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("   or: {} --accuracy-validation", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --message-parsing-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --transceiver-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
+        eprintln!("   or: {} --advanced-positioning-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         return Err("Invalid arguments".into());
     }
 

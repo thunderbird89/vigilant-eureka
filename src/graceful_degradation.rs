@@ -995,7 +995,7 @@ mod tests {
             Anchor { id: "4".to_string(), timestamp: 1000, position: Position { lat: 0.001, lon: 0.001, depth: 10.0 } },
         ];
         
-        let mode = manager.determine_operating_mode(&anchors).unwrap();
+        let mode = manager.determine_operating_mode(&anchors, 1000).unwrap();
         match mode {
             OperatingMode::Full3D { anchor_count, .. } => assert_eq!(anchor_count, 4),
             _ => panic!("Expected Full3D mode"),
@@ -1012,7 +1012,7 @@ mod tests {
             Anchor { id: "2".to_string(), timestamp: 1000, position: Position { lat: 0.001, lon: 0.0, depth: 0.0 } },
         ];
         
-        let mode = manager.determine_operating_mode(&anchors).unwrap();
+        let mode = manager.determine_operating_mode(&anchors, 1000).unwrap();
         match mode {
             OperatingMode::RangeBearing { .. } => {}, // Expected
             _ => panic!("Expected RangeBearing mode, got {:?}", mode),

@@ -1,5 +1,4 @@
-use crate::coordinate_system::{CoordinateSystemManager, MultiCoordinateSystemManager, CoordinateSystemType};
-use crate::Position;
+use shared_positioning::{CoordinateSystemManager, MultiCoordinateSystemManager, CoordinateSystemType, Position};
 
 /// Demonstration of the coordinate system management functionality
 pub fn coordinate_system_demo() {

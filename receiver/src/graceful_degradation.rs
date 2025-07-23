@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
-use crate::error_handling::{PositioningError, ErrorSeverity, ErrorContext};
+use shared_positioning::{PositioningError, ErrorSeverity, ErrorContext, CriticalFailureType, TimingIssue};
 use crate::{Anchor, Position, trilaterate, SPEED_OF_SOUND_WATER};
 use nalgebra::Vector3;
 
@@ -325,14 +325,14 @@ impl GracefulDegradationManager {
             }
             OperatingMode::Emergency { reason, .. } => {
                 Err(PositioningError::CriticalFailure {
-                    failure_type: crate::error_handling::CriticalFailureType::SystemOverload,
+                    failure_type: CriticalFailureType::SystemOverload,
                     system_state: format!("Emergency mode: {}", reason),
                     recovery_possible: true,
                 })
             }
             OperatingMode::Offline { reason } => {
                 Err(PositioningError::CriticalFailure {
-                    failure_type: crate::error_handling::CriticalFailureType::SystemOverload,
+                    failure_type: CriticalFailureType::SystemOverload,
                     system_state: format!("System offline: {}", reason),
                     recovery_possible: false,
                 })
@@ -526,7 +526,7 @@ impl GracefulDegradationManager {
         let dt_ms = receiver_time_ms as i64 - primary_anchor.timestamp as i64;
         if dt_ms < 0 {
             return Err(PositioningError::TimingError {
-                error_type: crate::error_handling::TimingIssue::TimestampInvalid,
+                error_type: TimingIssue::TimestampInvalid,
                 time_offset_ms: dt_ms,
                 affected_anchors: vec![primary_anchor_id],
             });
@@ -593,7 +593,7 @@ impl GracefulDegradationManager {
         let current_time = SystemTime::UNIX_EPOCH + Duration::from_millis(receiver_time_ms);
         let time_elapsed = current_time.duration_since(last_time)
             .map_err(|_| PositioningError::TimingError {
-                error_type: crate::error_handling::TimingIssue::TimestampInvalid,
+                error_type: TimingIssue::TimestampInvalid,
                 time_offset_ms: -1000,
                 affected_anchors: vec![],
             })?;

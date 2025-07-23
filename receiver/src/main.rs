@@ -2,18 +2,19 @@ use nalgebra::{Matrix3, Vector3};
 use serde::Deserialize;
 use std::f64::consts::PI;
 
+// Import shared components from shared-positioning library
+use shared_positioning::{
+    MessageParser, TransceiverInterface, CoordinateSystemManager, 
+    PositioningError, ErrorRecoveryManager, SystemConfig
+};
+
 pub mod accuracy_validation;
 pub mod performance_monitor;
 pub mod optimization_cache;
-pub mod config;
-pub mod message_parser;
 pub mod message_parser_demo;
-pub mod transceiver_interface;
 pub mod transceiver_demo;
 pub mod advanced_positioning;
-pub mod error_handling;
 pub mod graceful_degradation;
-pub mod coordinate_system;
 pub mod coordinate_system_demo;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
@@ -756,7 +757,7 @@ pub fn coordinate_system_management_demo() {
 
 /// Demonstration of comprehensive error handling and graceful degradation
 pub fn error_handling_and_degradation_demo() {
-    use error_handling::{ErrorLogger, ErrorRecoveryManager, PositioningError, ErrorSeverity, ErrorContext, ConsoleLogHandler};
+    use shared_positioning::{ErrorLogger, ErrorRecoveryManager, PositioningError, ErrorSeverity, ErrorContext, ConsoleLogHandler};
     use graceful_degradation::{GracefulDegradationManager, OperatingMode};
     
     println!("=== ERROR HANDLING AND GRACEFUL DEGRADATION DEMO ===\n");
@@ -857,7 +858,7 @@ pub fn error_handling_and_degradation_demo() {
         PositioningError::DegenerateGeometry {
             condition_number: 15000.0,
             volume: 0.001,
-            geometry_type: error_handling::GeometryIssue::Collinear,
+            geometry_type: shared_positioning::GeometryIssue::Collinear,
             anchor_positions: vec![(1, 32.0, 45.0, 0.0), (2, 32.001, 45.0, 0.0)],
         },
         PositioningError::StaleData {

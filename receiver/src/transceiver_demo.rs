@@ -1,9 +1,9 @@
 // Demonstration and testing of transceiver interface implementations
-use crate::transceiver_interface::{
+use shared_positioning::{
     TransceiverInterface, MockTransceiver, SerialTransceiver, I2CTransceiver,
     TransceiverConfig, PowerMode, CommError, RecoveryStrategy, ErrorRecoveryManager
 };
-use crate::message_parser::MessageParser;
+use shared_positioning::MessageParser;
 
 
 /// Comprehensive demonstration of transceiver interface functionality

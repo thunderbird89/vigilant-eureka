@@ -1,4 +1,4 @@
-use crate::message_parser::{
+use shared_positioning::{
     MessageParser, MessageValidator, RawMessage, AnchorMessage, GeodeticPosition,
     MessageParseError
 };

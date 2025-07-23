@@ -2,4 +2,5 @@
 members = [
     "receiver",
     "beacon",
+    "shared-positioning",
 ]

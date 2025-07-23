@@ -11,6 +11,8 @@ pub mod message_parser_demo;
 pub mod transceiver_interface;
 pub mod transceiver_demo;
 pub mod advanced_positioning;
+pub mod error_handling;
+pub mod graceful_degradation;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -280,7 +282,7 @@ pub struct Anchor {
     position: Position,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 pub struct Position {
     lat: f64,  // degrees
     #[serde(rename = "long")]
@@ -743,6 +745,165 @@ pub fn message_parsing_system_demo() {
 pub fn transceiver_communication_demo() {
     transceiver_demo::transceiver_interface_demo();
     transceiver_demo::transceiver_performance_test();
+}
+
+/// Demonstration of comprehensive error handling and graceful degradation
+pub fn error_handling_and_degradation_demo() {
+    use error_handling::{ErrorLogger, ErrorRecoveryManager, PositioningError, ErrorSeverity, ErrorContext, ConsoleLogHandler};
+    use graceful_degradation::{GracefulDegradationManager, OperatingMode};
+    
+    println!("=== ERROR HANDLING AND GRACEFUL DEGRADATION DEMO ===\n");
+    
+    // Initialize error handling system
+    let mut error_logger = ErrorLogger::new(100, ErrorSeverity::Warning);
+    error_logger.add_output_handler(Box::new(ConsoleLogHandler::new(ErrorSeverity::Error)));
+    
+    let mut recovery_manager = ErrorRecoveryManager::new();
+    let mut degradation_manager = GracefulDegradationManager::new();
+    
+    println!("1. NORMAL OPERATION (4 anchors)");
+    let base_time = 1723111199000u64;
+    let good_anchors = vec![
+        Anchor {
+            id: "001".to_string(),
+            timestamp: base_time + 986,
+            position: Position { lat: 32.12345, lon: 45.47675, depth: 0.0 },
+        },
+        Anchor {
+            id: "002".to_string(),
+            timestamp: base_time + 988,
+            position: Position { lat: 32.12365, lon: 45.47695, depth: 5.0 },
+        },
+        Anchor {
+            id: "003".to_string(),
+            timestamp: base_time + 988,
+            position: Position { lat: 32.12365, lon: 45.47655, depth: 10.0 },
+        },
+        Anchor {
+            id: "004".to_string(),
+            timestamp: base_time + 986,
+            position: Position { lat: 32.12385, lon: 45.47675, depth: 15.0 },
+        },
+    ];
+    
+    match degradation_manager.attempt_positioning(&good_anchors, base_time + 990) {
+        Ok(result) => {
+            println!("   Position: lat={:.6}, lon={:.6}, depth={:.2}m", 
+                     result.position.lat, result.position.lon, result.position.depth);
+            println!("   Mode: {:?}", result.operating_mode);
+            println!("   Accuracy: {:.2}m", result.accuracy_estimate.overall_accuracy_m);
+            if !result.warnings.is_empty() {
+                println!("   Warnings: {:?}", result.warnings);
+            }
+        }
+        Err(e) => println!("   Error: {}", e),
+    }
+    
+    println!("\n2. DEGRADED OPERATION (3 anchors - 2D mode)");
+    let degraded_anchors = vec![
+        good_anchors[0].clone(),
+        good_anchors[1].clone(),
+        good_anchors[2].clone(),
+    ];
+    
+    match degradation_manager.attempt_positioning(&degraded_anchors, base_time + 990) {
+        Ok(result) => {
+            println!("   Position: lat={:.6}, lon={:.6}, depth={:.2}m", 
+                     result.position.lat, result.position.lon, result.position.depth);
+            println!("   Mode: {:?}", result.operating_mode);
+            println!("   Accuracy: {:.2}m", result.accuracy_estimate.overall_accuracy_m);
+            if !result.warnings.is_empty() {
+                println!("   Warnings: {:?}", result.warnings);
+            }
+        }
+        Err(e) => println!("   Error: {}", e),
+    }
+    
+    println!("\n3. SEVERELY DEGRADED OPERATION (2 anchors - range/bearing mode)");
+    let minimal_anchors = vec![
+        good_anchors[0].clone(),
+        good_anchors[1].clone(),
+    ];
+    
+    match degradation_manager.attempt_positioning(&minimal_anchors, base_time + 990) {
+        Ok(result) => {
+            println!("   Position: lat={:.6}, lon={:.6}, depth={:.2}m", 
+                     result.position.lat, result.position.lon, result.position.depth);
+            println!("   Mode: {:?}", result.operating_mode);
+            println!("   Accuracy: {:.2}m", result.accuracy_estimate.overall_accuracy_m);
+            if !result.warnings.is_empty() {
+                println!("   Warnings: {:?}", result.warnings);
+            }
+        }
+        Err(e) => println!("   Error: {}", e),
+    }
+    
+    println!("\n4. ERROR HANDLING DEMONSTRATION");
+    
+    // Simulate various errors
+    let errors = vec![
+        PositioningError::InsufficientAnchors {
+            available: 1,
+            required: 3,
+            anchor_ids: vec![1],
+        },
+        PositioningError::DegenerateGeometry {
+            condition_number: 15000.0,
+            volume: 0.001,
+            geometry_type: error_handling::GeometryIssue::Collinear,
+            anchor_positions: vec![(1, 32.0, 45.0, 0.0), (2, 32.001, 45.0, 0.0)],
+        },
+        PositioningError::StaleData {
+            oldest_anchor_age_ms: 10000,
+            max_allowed_age_ms: 5000,
+            stale_anchor_ids: vec![1, 2, 3],
+        },
+    ];
+    
+    let context = ErrorContext::default();
+    
+    for (i, error) in errors.iter().enumerate() {
+        println!("   Error {}: {}", i + 1, error);
+        
+        if let Some(strategy) = recovery_manager.handle_error(error, &context) {
+            println!("   Recovery strategy: {:?}", strategy);
+        }
+        
+        error_logger.log_error(error.clone(), context.clone(), None);
+    }
+    
+    println!("\n5. SYSTEM HEALTH MONITORING");
+    let health = degradation_manager.get_system_health();
+    println!("   Overall status: {:?}", health.overall_status);
+    println!("   Performance metrics:");
+    println!("     Success rate: {:.1}%", health.performance_metrics.positioning_success_rate * 100.0);
+    println!("     Avg computation time: {:.1} ms", health.performance_metrics.average_computation_time_ms);
+    println!("     Avg accuracy: {:.2} m", health.performance_metrics.average_accuracy_m);
+    
+    println!("   Resource usage:");
+    println!("     Memory: {:.1}%", health.resource_usage.memory_usage_percent);
+    println!("     CPU: {:.1}%", health.resource_usage.cpu_usage_percent);
+    if let Some(battery) = health.resource_usage.battery_level_percent {
+        println!("     Battery: {:.1}%", battery);
+    }
+    
+    println!("\n6. PERFORMANCE STATISTICS");
+    let perf_stats = degradation_manager.get_performance_statistics();
+    println!("   Total attempts: {}", perf_stats.total_attempts);
+    println!("   Success rate: {:.1}%", perf_stats.success_rate * 100.0);
+    println!("   Average accuracy: {:.2} m", perf_stats.average_accuracy_m);
+    println!("   Average computation time: {:.1} ms", perf_stats.average_computation_time_ms);
+    
+    println!("\n7. ERROR STATISTICS");
+    let error_stats = error_logger.get_error_statistics();
+    println!("   Total errors: {}", error_stats.total_errors);
+    println!("   Resolved errors: {}", error_stats.resolved_errors);
+    
+    println!("\n8. RECOVERY STATISTICS");
+    let recovery_stats = recovery_manager.get_recovery_statistics();
+    println!("   Recovery attempts: {}", recovery_stats.total_attempts);
+    println!("   Success rate: {:.1}%", recovery_stats.success_rate * 100.0);
+    println!("   Average recovery time: {:.1} ms", recovery_stats.average_recovery_time);
 }
 
 /// Demonstration of advanced positioning accuracy improvements
@@ -1390,6 +1551,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     
+    // Check for error handling and graceful degradation demo mode
+    if args.len() == 2 && args[1] == "--error-handling-demo" {
+        error_handling_and_degradation_demo();
+        return Ok(());
+    }
+    
     if args.len() != 3 {
         eprintln!(
             "Usage: {} <json_file> <receiver_timestamp_ms>",
@@ -1401,6 +1568,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("   or: {} --message-parsing-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --transceiver-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --advanced-positioning-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
+        eprintln!("   or: {} --error-handling-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         return Err("Invalid arguments".into());
     }
 

@@ -8,6 +8,8 @@ pub mod optimization_cache;
 pub mod config;
 pub mod message_parser;
 pub mod message_parser_demo;
+pub mod transceiver_interface;
+pub mod transceiver_demo;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -736,6 +738,12 @@ pub fn message_parsing_system_demo() {
     message_parser_demo::timestamp_precision_demo();
 }
 
+/// Demonstration of transceiver interface and communication system
+pub fn transceiver_communication_demo() {
+    transceiver_demo::transceiver_interface_demo();
+    transceiver_demo::transceiver_performance_test();
+}
+
 /// Demonstration of performance monitoring and optimization features
 pub fn performance_optimization_demo() {
     use performance_monitor::{PerformanceMonitor, PerformanceConstraints};
@@ -932,6 +940,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     
+    // Check for transceiver communication demo mode
+    if args.len() == 2 && args[1] == "--transceiver-demo" {
+        transceiver_communication_demo();
+        return Ok(());
+    }
+    
     if args.len() != 3 {
         eprintln!(
             "Usage: {} <json_file> <receiver_timestamp_ms>",
@@ -941,6 +955,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("   or: {} --performance-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --accuracy-validation", args.get(0).map_or("trilateration", |s| s.as_str()));
         eprintln!("   or: {} --message-parsing-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
+        eprintln!("   or: {} --transceiver-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
         return Err("Invalid arguments".into());
     }
 

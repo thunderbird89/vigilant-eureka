@@ -7,6 +7,7 @@ pub mod coordinate_system;
 pub mod error_handling;
 pub mod config;
 pub mod gps_manager;
+pub mod power_manager;
 
 // Re-export commonly used types for convenience
 pub use message_parser::{
@@ -34,4 +35,8 @@ pub use config::{
 pub use gps_manager::{
     GpsManager, GpsPosition, GpsConfig, GpsError, GpsStatus, 
     BasicGpsManager, MockGpsManager
+};
+pub use power_manager::{
+    PowerManager, PowerError, BatteryStatus, BatteryHealth, ChargingStatus,
+    PowerOperationMode, PowerConfig, PowerStats, BasicPowerManager, MockPowerManager
 };

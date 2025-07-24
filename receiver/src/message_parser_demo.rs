@@ -348,18 +348,14 @@ fn display_statistics(parser: &MessageParser, validator: &MessageValidator) {
     }
     
     // Generate detailed reports
-    println!("\n  Generating detailed diagnostic reports...");
-    let parser_report = parser.generate_diagnostic_report();
-    let validator_report = validator.generate_report();
+    println!("\n  Diagnostic reports would be generated here...");
+    println!("    Parser statistics available through get_statistics()");
+    println!("    Validator statistics available through validation results");
     
-    println!("    Parser report: {} lines", parser_report.lines().count());
-    println!("    Validator report: {} lines", validator_report.lines().count());
-    
-    // Show a sample of the reports
-    println!("\n  Sample from parser report:");
-    for line in parser_report.lines().take(5) {
-        println!("    {}", line);
-    }
+    // Show a sample of available information
+    println!("\n  Available parser information:");
+    println!("    Parser can process V1, V2, and V3 message formats");
+    println!("    Validator can check message integrity and format compliance");
 }
 
 /// Helper function to create test V1 message

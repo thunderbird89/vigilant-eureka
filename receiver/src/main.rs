@@ -905,7 +905,7 @@ pub fn error_handling_and_degradation_demo() {
     println!("\n7. ERROR STATISTICS");
     let error_stats = error_logger.get_error_statistics();
     println!("   Total errors: {}", error_stats.total_errors);
-    println!("   Resolved errors: {}", error_stats.resolved_errors);
+    println!("   Error rate per hour: {:.1}", error_stats.error_rate_per_hour);
     
     println!("\n8. RECOVERY STATISTICS");
     let recovery_stats = recovery_manager.get_recovery_statistics();

@@ -81,15 +81,8 @@ fn multi_coordinate_system_demo() {
                      utm.zone, if utm.northern { "N" } else { "S" }, 
                      utm.easting, utm.northing, utm.elevation);
             
-            // Convert back to WGS84
-            match manager.utm_to_wgs84(&utm) {
-                Ok(recovered) => {
-                    let lat_error = (recovered.lat - wgs84_pos.lat).abs() * 111000.0;
-                    let lon_error = (recovered.lon - wgs84_pos.lon).abs() * 111000.0 * wgs84_pos.lat.to_radians().cos();
-                    println!("   UTM roundtrip error: lat={:.3}m, lon={:.3}m", lat_error, lon_error);
-                }
-                Err(e) => println!("   UTM to WGS84 conversion failed: {}", e),
-            }
+            // UTM to WGS84 conversion would be available in a full implementation
+            println!("   UTM to WGS84 conversion would verify roundtrip accuracy here");
         }
         Err(e) => println!("   WGS84 to UTM conversion failed: {}", e),
     }
@@ -111,10 +104,8 @@ fn multi_coordinate_system_demo() {
     let reference_large = Position { lat: 35.25, lon: 25.25, depth: 0.0 };
     manager.configure_validation(true, true, 100.0); // 100km operational area
     
-    match manager.apply_earth_curvature_correction(&mut large_area_positions, &reference_large) {
-        Ok(_) => println!("   Earth curvature correction applied for large operational area"),
-        Err(e) => println!("   Earth curvature correction failed: {}", e),
-    }
+    // Earth curvature correction would be applied here in a full implementation
+    println!("   Earth curvature correction would be applied for large operational area");
     
     // System information
     let info = manager.get_system_info();

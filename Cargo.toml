@@ -4,3 +4,5 @@ members = [
     "beacon",
     "shared-positioning",
 ]
+
+edition = "2021"

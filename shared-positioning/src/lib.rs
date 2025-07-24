@@ -30,7 +30,26 @@ pub use coordinate_system::{
 pub use error_handling::{
     PositioningError, ErrorSeverity, ErrorContext, ErrorRecoveryManager,
     ErrorLogger, RecoveryStrategy, ConsoleLogHandler, GeometryIssue, 
-    CriticalFailureType, TimingIssue, ConfigError, Result
+    CriticalFailureType, TimingIssue, ConfigError, Result,
+    // Beacon-specific error handling exports
+    BeaconError, BeaconErrorContext, BeaconErrorLogEntry, BeaconLogOutputHandler,
+    DiagnosticSystemManager, DiagnosticReport, SystemHealthMetrics, ErrorStatistics,
+    PerformanceMetrics, EnvironmentalMetrics, HardwareStatusReport, RecoveryEffectivenessReport,
+    HealthAlert, StructuredFileLogHandler, ErrorTrendAnalyzer,
+    // Error type enums
+    GpsErrorType, PowerErrorType, CommunicationErrorType, TransmissionErrorType,
+    ConfigurationErrorType, SystemErrorType, HardwareComponent, HardwareFaultType,
+    // Status snapshots
+    BatteryStatusSnapshot, BatteryHealth as BeaconBatteryHealth, BeaconSystemState, ResourceUsageSnapshot,
+    GpsStatusSnapshot, CommunicationStatusSnapshot, TransmissionStatusSnapshot,
+    // Power and charging enums
+    PowerMode as BeaconPowerMode, ChargingStatus as BeaconChargingStatus,
+    // Health and diagnostic types
+    MemoryHealthMetrics, PowerHealthMetrics, CommunicationHealthMetrics, GpsHealthMetrics,
+    ComponentStatus, HardwareFaultRecord, MaintenanceRecommendation, MaintenanceType,
+    MaintenanceUrgency, FailedRecoveryRecord, PowerConsumptionTrend, ThermalStatus,
+    SignalQualityTrend, SatelliteVisibility, PositionStability, ErrorTrendAnalysis,
+    TrendDirection, SeasonalPattern, HealthThresholds
 };
 pub use config::{
     SystemConfig, AnchorConfig, PositioningConfig, RuntimeParameterManager

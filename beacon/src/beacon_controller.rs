@@ -15,58 +15,17 @@ use shared_positioning::{
     ErrorLogEntry, CommErrorSeverity, CommError, TransmissionManager,
     TransmissionConfig, TransmissionError,
     TransmissionStatistics, TransmissionMessageVersion, TransmissionPriority,
-    EnvironmentalConditions
+    EnvironmentalConditions,
+    // Enhanced error handling imports
+    BeaconError, BeaconErrorContext, DiagnosticSystemManager, HealthAlert,
+    GpsErrorType, PowerErrorType, CommunicationErrorType, TransmissionErrorType,
+    ConfigurationErrorType, SystemErrorType, HardwareComponent, HardwareFaultType,
+    BatteryStatusSnapshot, BeaconBatteryHealth, BeaconSystemState, ResourceUsageSnapshot,
+    GpsStatusSnapshot, CommunicationStatusSnapshot, TransmissionStatusSnapshot,
+    EnvironmentalMetrics, ConsoleLogHandler, StructuredFileLogHandler,
+    ErrorSeverity, RecoveryStrategy, BeaconPowerMode, BeaconChargingStatus
 };
 
-/// Beacon-specific error types
-#[derive(Debug, Clone)]
-pub enum BeaconError {
-    GpsError(GpsError),
-    PowerError(PowerError),
-    CommunicationError(CommError),
-    TransmissionError(TransmissionError),
-    ConfigurationError(ConfigError),
-    SystemError(SystemError),
-}
-
-impl std::fmt::Display for BeaconError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BeaconError::GpsError(e) => write!(f, "GPS error: {}", e),
-            BeaconError::PowerError(e) => write!(f, "Power error: {}", e),
-            BeaconError::CommunicationError(e) => write!(f, "Communication error: {}", e),
-            BeaconError::TransmissionError(e) => write!(f, "Transmission error: {}", e),
-            BeaconError::ConfigurationError(e) => write!(f, "Configuration error: {}", e),
-            BeaconError::SystemError(e) => write!(f, "System error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for BeaconError {}
-
-impl From<GpsError> for BeaconError {
-    fn from(error: GpsError) -> Self {
-        BeaconError::GpsError(error)
-    }
-}
-
-impl From<PowerError> for BeaconError {
-    fn from(error: PowerError) -> Self {
-        BeaconError::PowerError(error)
-    }
-}
-
-impl From<CommError> for BeaconError {
-    fn from(error: CommError) -> Self {
-        BeaconError::CommunicationError(error)
-    }
-}
-
-impl From<TransmissionError> for BeaconError {
-    fn from(error: TransmissionError) -> Self {
-        BeaconError::TransmissionError(error)
-    }
-}
 
 
 
@@ -244,6 +203,9 @@ where
     control_sender: Option<Sender<ControlMessage>>,
     control_receiver: Option<Receiver<ControlMessage>>,
     running: bool,
+    // Enhanced error handling and diagnostics
+    diagnostic_system: DiagnosticSystemManager,
+    last_diagnostic_report: Option<SystemTime>,
 }
 
 impl<G, P, C, T> BeaconController<G, P, C, T>
@@ -266,6 +228,21 @@ where
         
         let (sender, receiver) = mpsc::channel();
         
+        // Initialize diagnostic system with logging handlers
+        let mut diagnostic_system = DiagnosticSystemManager::new(100);
+        
+        // Add console logging handler
+        let console_handler = ConsoleLogHandler::new(ErrorSeverity::Warning);
+        diagnostic_system.add_output_handler(Box::new(console_handler));
+        
+        // Add structured file logging handler
+        let file_handler = StructuredFileLogHandler::new(
+            format!("beacon_{}_errors.log", config.beacon_id),
+            ErrorSeverity::Info,
+            50
+        );
+        diagnostic_system.add_output_handler(Box::new(file_handler));
+        
         Ok(Self {
             config,
             operational_state: OperationalState::Initializing,
@@ -286,28 +263,39 @@ where
             control_sender: Some(sender),
             control_receiver: Some(receiver),
             running: false,
+            diagnostic_system,
+            last_diagnostic_report: None,
         })
     }
     
     /// Validate beacon configuration
     fn validate_config(config: &BeaconConfig) -> Result<(), BeaconError> {
         if config.transmission_interval_ms < 1000 || config.transmission_interval_ms > 60000 {
-            return Err(BeaconError::ConfigurationError(ConfigError::InvalidParameter(
-                "Transmission interval must be between 1-60 seconds".to_string()
-            )));
+            return Err(BeaconError::ConfigurationError {
+                error_type: ConfigurationErrorType::ParameterOutOfRange,
+                parameter_name: "transmission_interval_ms".to_string(),
+                current_value: config.transmission_interval_ms.to_string(),
+                expected_value: "1000-60000".to_string(),
+            });
         }
         
         if config.emergency_config.emergency_transmission_interval_ms < 1000 {
-            return Err(BeaconError::ConfigurationError(ConfigError::InvalidParameter(
-                "Emergency transmission interval must be at least 1 second".to_string()
-            )));
+            return Err(BeaconError::ConfigurationError {
+                error_type: ConfigurationErrorType::ParameterOutOfRange,
+                parameter_name: "emergency_transmission_interval_ms".to_string(),
+                current_value: config.emergency_config.emergency_transmission_interval_ms.to_string(),
+                expected_value: ">=1000".to_string(),
+            });
         }
         
         if config.emergency_config.emergency_power_threshold_percent < 1.0 || 
            config.emergency_config.emergency_power_threshold_percent > 20.0 {
-            return Err(BeaconError::ConfigurationError(ConfigError::InvalidParameter(
-                "Emergency power threshold must be between 1-20%".to_string()
-            )));
+            return Err(BeaconError::ConfigurationError {
+                error_type: ConfigurationErrorType::ParameterOutOfRange,
+                parameter_name: "emergency_power_threshold_percent".to_string(),
+                current_value: config.emergency_config.emergency_power_threshold_percent.to_string(),
+                expected_value: "1.0-20.0".to_string(),
+            });
         }
         
         Ok(())
@@ -462,6 +450,8 @@ where
         let mut last_transmission = Instant::now();
         let mut last_power_check = Instant::now();
         let mut last_communication_check = Instant::now();
+        let mut last_health_check = Instant::now();
+        let mut last_diagnostic_report = Instant::now();
         
         while self.running {
             let now = Instant::now();
@@ -504,6 +494,28 @@ where
                 last_communication_check = now;
             }
             
+            // Check system health periodically
+            if now.duration_since(last_health_check) >= Duration::from_secs(30) {
+                self.check_system_health();
+                last_health_check = now;
+            }
+            
+            // Generate diagnostic report periodically
+            if now.duration_since(last_diagnostic_report) >= Duration::from_secs(300) { // Every 5 minutes
+                let report = self.generate_diagnostic_report();
+                self.last_diagnostic_report = Some(SystemTime::now());
+                
+                // Log key metrics from the report
+                self.log_info(&format!(
+                    "Diagnostic report: Health score: {:.2}, Error rate: {:.1}/hr, Battery: {:.1}%",
+                    report.system_health.overall_health_score,
+                    report.error_statistics.error_rate_per_hour,
+                    report.system_health.power_health.estimated_runtime_hours
+                ));
+                
+                last_diagnostic_report = now;
+            }
+            
             // Process control messages
             if let Some(receiver) = &self.control_receiver {
                 if let Ok(message) = receiver.try_recv() {
@@ -520,7 +532,21 @@ where
     
     /// Update GPS status and handle state transitions
     fn update_gps(&mut self) -> Result<(), BeaconError> {
-        self.gps_manager.update()?;
+        if let Err(gps_error) = self.gps_manager.update() {
+            let beacon_error = BeaconError::GpsError {
+                error_type: GpsErrorType::HardwareFault,
+                last_known_position: self.gps_manager.get_current_position()
+                    .map(|pos| (pos.latitude, pos.longitude, pos.altitude, SystemTime::now())),
+                satellite_count: self.gps_manager.get_satellite_count(),
+                signal_strength: None,
+            };
+            
+            if let Some(recovery_strategy) = self.log_beacon_error(beacon_error.clone()) {
+                self.apply_recovery_strategy(recovery_strategy)?;
+            }
+            
+            return Err(beacon_error);
+        }
         
         let gps_status = self.gps_manager.get_status();
         
@@ -539,11 +565,34 @@ where
                         .unwrap_or(Duration::from_secs(0));
                     
                     if time_since_update > Duration::from_secs(self.config.emergency_config.emergency_gps_timeout_s as u64) {
+                        let beacon_error = BeaconError::GpsError {
+                            error_type: GpsErrorType::SignalLost,
+                            last_known_position: self.gps_manager.get_current_position()
+                                .map(|pos| (pos.latitude, pos.longitude, pos.altitude, last_update)),
+                            satellite_count: self.gps_manager.get_satellite_count(),
+                            signal_strength: None,
+                        };
+                        
+                        if let Some(recovery_strategy) = self.log_beacon_error(beacon_error) {
+                            self.apply_recovery_strategy(recovery_strategy)?;
+                        }
+                        
                         self.handle_emergency(EmergencyType::GpsSignalLost)?;
                     }
                 }
             }
             GpsStatus::HardwareFault => {
+                let beacon_error = BeaconError::HardwareError {
+                    component: HardwareComponent::GpsReceiver,
+                    fault_type: HardwareFaultType::ComponentFailure,
+                    diagnostic_data: vec![],
+                    recovery_possible: true,
+                };
+                
+                if let Some(recovery_strategy) = self.log_beacon_error(beacon_error) {
+                    self.apply_recovery_strategy(recovery_strategy)?;
+                }
+                
                 self.handle_emergency(EmergencyType::HardwareFault)?;
             }
             _ => {}
@@ -554,22 +603,105 @@ where
     
     /// Check power status and handle power-related emergencies
     fn check_power_status(&mut self) -> Result<(), BeaconError> {
-        let battery_status = self.power_manager.get_battery_status()?;
+        let battery_status = match self.power_manager.get_battery_status() {
+            Ok(status) => status,
+            Err(power_error) => {
+                let beacon_error = BeaconError::PowerError {
+                    error_type: PowerErrorType::ThresholdViolation {
+                        threshold_name: "battery_status_read".to_string(),
+                        value: 0.0,
+                    },
+                    battery_status: BatteryStatusSnapshot {
+                        voltage_v: 0.0,
+                        current_ma: 0.0,
+                        capacity_percent: 0.0,
+                        temperature_c: 0.0,
+                        health: BeaconBatteryHealth::Unknown,
+                        cycles: 0,
+                    },
+                    power_mode: BeaconPowerMode::Normal,
+                    charging_status: BeaconChargingStatus::NotCharging,
+                };
+                
+                if let Some(recovery_strategy) = self.log_beacon_error(beacon_error.clone()) {
+                    self.apply_recovery_strategy(recovery_strategy)?;
+                }
+                
+                return Err(beacon_error);
+            }
+        };
         
         // Check for power emergencies
         if battery_status.capacity_percent <= self.config.emergency_config.emergency_power_threshold_percent {
+            let beacon_error = BeaconError::PowerError {
+                error_type: PowerErrorType::BatteryDepleted,
+                battery_status: BatteryStatusSnapshot {
+                    voltage_v: battery_status.voltage_v,
+                    current_ma: battery_status.current_ma,
+                    capacity_percent: battery_status.capacity_percent,
+                    temperature_c: battery_status.temperature_c,
+                    health: BeaconBatteryHealth::Critical,
+                    cycles: 0,
+                },
+                power_mode: BeaconPowerMode::Emergency,
+                charging_status: BeaconChargingStatus::NotCharging,
+            };
+            
+            if let Some(recovery_strategy) = self.log_beacon_error(beacon_error) {
+                self.apply_recovery_strategy(recovery_strategy)?;
+            }
+            
             self.handle_emergency(EmergencyType::BatteryDepleted)?;
         } else if battery_status.capacity_percent <= self.config.power_config.power_save_mode_threshold_percent {
             if self.operational_state == OperationalState::Normal {
                 self.operational_state = OperationalState::PowerSave;
-                self.power_manager.set_power_mode(PowerOperationMode::PowerSave)?;
-                self.log_info("Entering power save mode");
+                if let Err(e) = self.power_manager.set_power_mode(PowerOperationMode::PowerSave) {
+                    let beacon_error = BeaconError::PowerError {
+                        error_type: PowerErrorType::PowerModeTransitionFailed,
+                        battery_status: BatteryStatusSnapshot {
+                            voltage_v: battery_status.voltage_v,
+                            current_ma: battery_status.current_ma,
+                            capacity_percent: battery_status.capacity_percent,
+                            temperature_c: battery_status.temperature_c,
+                            health: BeaconBatteryHealth::Fair,
+                            cycles: 0,
+                        },
+                        power_mode: BeaconPowerMode::PowerSave,
+                        charging_status: BeaconChargingStatus::NotCharging,
+                    };
+                    
+                    if let Some(recovery_strategy) = self.log_beacon_error(beacon_error) {
+                        self.apply_recovery_strategy(recovery_strategy)?;
+                    }
+                } else {
+                    self.log_info("Entering power save mode");
+                }
             }
         }
         
         // Check temperature extremes
         if battery_status.temperature_c < self.config.power_config.temperature_min_c ||
            battery_status.temperature_c > self.config.power_config.temperature_max_c {
+            let beacon_error = BeaconError::PowerError {
+                error_type: PowerErrorType::TemperatureExtreme {
+                    temperature_c: battery_status.temperature_c,
+                },
+                battery_status: BatteryStatusSnapshot {
+                    voltage_v: battery_status.voltage_v,
+                    current_ma: battery_status.current_ma,
+                    capacity_percent: battery_status.capacity_percent,
+                    temperature_c: battery_status.temperature_c,
+                    health: BeaconBatteryHealth::Poor,
+                    cycles: 0,
+                },
+                power_mode: BeaconPowerMode::Emergency,
+                charging_status: BeaconChargingStatus::NotCharging,
+            };
+            
+            if let Some(recovery_strategy) = self.log_beacon_error(beacon_error) {
+                self.apply_recovery_strategy(recovery_strategy)?;
+            }
+            
             self.handle_emergency(EmergencyType::TemperatureExtreme)?;
         }
         
@@ -577,6 +709,27 @@ where
         if let Ok(violations) = self.power_manager.check_thresholds() {
             for violation in violations {
                 self.log_warning(&format!("Power threshold violation: {}", violation));
+                
+                let beacon_error = BeaconError::PowerError {
+                    error_type: PowerErrorType::ThresholdViolation {
+                        threshold_name: format!("{:?}", violation),
+                        value: battery_status.capacity_percent,
+                    },
+                    battery_status: BatteryStatusSnapshot {
+                        voltage_v: battery_status.voltage_v,
+                        current_ma: battery_status.current_ma,
+                        capacity_percent: battery_status.capacity_percent,
+                        temperature_c: battery_status.temperature_c,
+                        health: BeaconBatteryHealth::Fair,
+                        cycles: 0,
+                    },
+                    power_mode: BeaconPowerMode::Normal,
+                    charging_status: BeaconChargingStatus::NotCharging,
+                };
+                
+                if let Some(recovery_strategy) = self.log_beacon_error(beacon_error) {
+                    let _ = self.apply_recovery_strategy(recovery_strategy);
+                }
             }
         }
         
@@ -595,7 +748,12 @@ where
         } else {
             // Use last known position or default
             self.log_warning("No GPS position available for transmission");
-            return Err(BeaconError::TransmissionError(TransmissionError::MessageBuildFailed("No GPS position available".to_string())));
+            return Err(BeaconError::TransmissionError {
+                error_type: TransmissionErrorType::MessageBuildFailed,
+                message_sequence: self.transmission_sequence,
+                transmission_power: self.current_power_level,
+                retry_count: 0,
+            });
         };
         
         // Calculate signal quality based on GPS and power status
@@ -615,11 +773,21 @@ where
             MessageVersion::V3 => {
                 message_builder.build_v3_message(self.config.beacon_id, position, signal_quality, self.transmission_sequence)
             }
-        }.map_err(|_| BeaconError::TransmissionError(TransmissionError::MessageBuildFailed("Failed to build message".to_string())))?;
+        }.map_err(|_| BeaconError::TransmissionError {
+            error_type: TransmissionErrorType::MessageBuildFailed,
+            message_sequence: self.transmission_sequence,
+            transmission_power: self.current_power_level,
+            retry_count: 0,
+        })?;
         
         // Transmit message
         self.transceiver.transmit_message(&message_data)
-            .map_err(|_| BeaconError::TransmissionError(TransmissionError::TransceiverFault("Failed to transmit message".to_string())))?;
+            .map_err(|_| BeaconError::TransmissionError {
+                error_type: TransmissionErrorType::TransceiverFault,
+                message_sequence: self.transmission_sequence,
+                transmission_power: self.current_power_level,
+                retry_count: 0,
+            })?;
         
         // Update transmission tracking
         self.transmission_sequence = self.transmission_sequence.wrapping_add(1);
@@ -797,6 +965,196 @@ where
             signal_quality_history: vec![], // TODO: Track signal quality history
             power_level_history: vec![], // TODO: Track power level history
         }
+    }
+    
+    /// Log beacon error with enhanced diagnostics
+    fn log_beacon_error(&mut self, error: BeaconError) -> Option<RecoveryStrategy> {
+        let context = self.create_beacon_error_context();
+        self.diagnostic_system.log_beacon_error(error, context)
+    }
+    
+    /// Create comprehensive error context
+    fn create_beacon_error_context(&self) -> BeaconErrorContext {
+        let battery_status = self.power_manager.get_battery_status()
+            .unwrap_or_else(|_| BatteryStatus::new(0.0, 0.0, 0.0, 0.0));
+        
+        BeaconErrorContext {
+            timestamp: SystemTime::now(),
+            beacon_id: self.config.beacon_id,
+            operational_state: format!("{:?}", self.operational_state),
+            system_state: BeaconSystemState {
+                operational_state: format!("{:?}", self.operational_state),
+                uptime_ms: SystemTime::now()
+                    .duration_since(self.start_time)
+                    .unwrap_or(Duration::from_secs(0))
+                    .as_millis() as u64,
+                last_gps_fix: self.last_gps_update,
+                last_transmission: self.last_transmission,
+                last_communication: self.last_communication,
+                active_threads: 1, // TODO: Track actual thread count
+                error_count: self.error_log.len() as u32,
+            },
+            gps_status: GpsStatusSnapshot {
+                is_locked: self.gps_manager.is_locked(),
+                satellite_count: self.gps_manager.get_satellite_count(),
+                accuracy_m: self.gps_manager.get_position_accuracy(),
+                last_fix_time: self.last_gps_update,
+                signal_strength: None, // TODO: Get actual signal strength
+            },
+            power_status: BatteryStatusSnapshot {
+                voltage_v: battery_status.voltage_v,
+                current_ma: battery_status.current_ma,
+                capacity_percent: battery_status.capacity_percent,
+                temperature_c: battery_status.temperature_c,
+                health: BeaconBatteryHealth::Good, // TODO: Determine actual health
+                cycles: 0, // TODO: Track battery cycles
+            },
+            communication_status: CommunicationStatusSnapshot {
+                is_connected: self.communication_manager.is_connected(),
+                signal_strength: self.communication_manager.get_signal_strength(),
+                last_successful_connection: self.last_communication,
+                connection_attempts: 0, // TODO: Track connection attempts
+                data_sent_bytes: 0, // TODO: Track data transfer
+                data_received_bytes: 0,
+            },
+            transmission_status: TransmissionStatusSnapshot {
+                last_transmission: self.last_transmission,
+                transmission_count: self.transmission_sequence as u64,
+                failure_count: 0, // TODO: Track transmission failures
+                current_power_level: self.current_power_level,
+                message_sequence: self.transmission_sequence,
+                average_interval_ms: self.config.transmission_interval_ms,
+            },
+            environmental_conditions: EnvironmentalMetrics {
+                temperature_c: battery_status.temperature_c,
+                humidity_percent: 60.0, // TODO: Get actual humidity
+                pressure_hpa: 1013.25, // TODO: Get actual pressure
+                signal_attenuation_db: 5.0, // TODO: Calculate signal attenuation
+                noise_level_db: 30.0, // TODO: Measure noise level
+                environmental_stress_score: 0.2, // TODO: Calculate stress score
+            },
+            resource_usage: ResourceUsageSnapshot {
+                memory_usage_bytes: 50000, // TODO: Get actual memory usage
+                memory_total_bytes: 80000,
+                cpu_usage_percent: 25.0, // TODO: Get actual CPU usage
+                flash_usage_bytes: 200000, // TODO: Get actual flash usage
+                flash_total_bytes: 512000,
+                active_connections: 1,
+            },
+            recent_events: vec![], // TODO: Track recent events
+        }
+    }
+    
+    /// Generate diagnostic report
+    pub fn generate_diagnostic_report(&mut self) -> shared_positioning::DiagnosticReport {
+        self.diagnostic_system.generate_diagnostic_report(Some(self.config.beacon_id))
+    }
+    
+    /// Check system health and handle alerts
+    fn check_system_health(&mut self) {
+        let alerts = self.diagnostic_system.check_system_health();
+        
+        for alert in alerts {
+            match alert.severity {
+                ErrorSeverity::Critical | ErrorSeverity::Fatal => {
+                    self.log_error(&format!("CRITICAL HEALTH ALERT: {} - {}", alert.component, alert.message));
+                    // Consider emergency actions
+                    if alert.component.contains("Error Rate") {
+                        let _ = self.handle_emergency(EmergencyType::SystemOverload);
+                    }
+                }
+                ErrorSeverity::Warning => {
+                    self.log_warning(&format!("Health warning: {} - {}", alert.component, alert.message));
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    /// Apply recovery strategy based on error analysis
+    fn apply_recovery_strategy(&mut self, strategy: RecoveryStrategy) -> Result<(), BeaconError> {
+        match strategy {
+            RecoveryStrategy::Retry { max_attempts, delay_ms, .. } => {
+                self.log_info(&format!("Applying retry strategy: max {} attempts, delay {} ms", max_attempts, delay_ms));
+                thread::sleep(Duration::from_millis(delay_ms));
+                // The actual retry will happen in the calling code
+            }
+            RecoveryStrategy::Fallback { fallback_mode, expected_accuracy_degradation } => {
+                self.log_warning(&format!("Applying fallback strategy: {} (accuracy degradation: {}x)", 
+                    fallback_mode, expected_accuracy_degradation));
+                // Implement fallback mode logic based on the mode
+                if fallback_mode == "last_known_position" {
+                    // Continue using last known GPS position
+                    self.log_info("Using last known GPS position for transmissions");
+                }
+            }
+            RecoveryStrategy::IgnoreWithWarning { warning_message, monitoring_required } => {
+                self.log_warning(&format!("Ignoring error with warning: {}", warning_message));
+                if monitoring_required {
+                    self.log_info("Enhanced monitoring enabled for this error type");
+                }
+            }
+            RecoveryStrategy::Reset { subsystem, preserve_configuration } => {
+                self.log_info(&format!("Resetting subsystem: {} (preserve config: {})", subsystem, preserve_configuration));
+                match subsystem.as_str() {
+                    "gps_receiver" => {
+                        // Reset GPS manager
+                        if let Err(e) = self.gps_manager.stop() {
+                            self.log_error(&format!("Failed to stop GPS manager: {}", e));
+                        }
+                        if let Err(e) = self.gps_manager.start_acquisition() {
+                            self.log_error(&format!("Failed to restart GPS manager: {}", e));
+                        }
+                    }
+                    "transceiver" => {
+                        // Reset transceiver (implementation would depend on transceiver interface)
+                        self.log_info("Transceiver reset requested");
+                    }
+                    _ => {
+                        self.log_warning(&format!("Unknown subsystem for reset: {}", subsystem));
+                    }
+                }
+            }
+            RecoveryStrategy::Degrade { disabled_features, performance_impact } => {
+                self.log_warning(&format!("Degrading system performance: disabling {:?} (impact: {})", 
+                    disabled_features, performance_impact));
+                
+                for feature in disabled_features {
+                    match feature.as_str() {
+                        "communication" => {
+                            let _ = self.communication_manager.disconnect();
+                            self.log_info("Communication disabled for power conservation");
+                        }
+                        "high_power_transmission" => {
+                            self.current_power_level = self.current_power_level.saturating_sub(50);
+                            self.log_info("Transmission power reduced");
+                        }
+                        "high_power_modes" => {
+                            if let Err(e) = self.power_manager.set_power_mode(PowerOperationMode::PowerSave) {
+                                self.log_error(&format!("Failed to set power save mode: {}", e));
+                            }
+                        }
+                        _ => {
+                            self.log_info(&format!("Feature degradation not implemented: {}", feature));
+                        }
+                    }
+                }
+            }
+            RecoveryStrategy::UserIntervention { required_action, urgency } => {
+                self.log_error(&format!("USER INTERVENTION REQUIRED ({:?}): {}", urgency, required_action));
+                // In a real system, this might send an alert to operators
+            }
+            RecoveryStrategy::Shutdown { reason, save_state } => {
+                self.log_error(&format!("SHUTDOWN REQUIRED: {} (save state: {})", reason, save_state));
+                if save_state {
+                    // Save current state before shutdown
+                    let _ = self.generate_diagnostic_report();
+                }
+                return self.prepare_emergency_shutdown();
+            }
+        }
+        
+        Ok(())
     }
     
     /// Log informational message

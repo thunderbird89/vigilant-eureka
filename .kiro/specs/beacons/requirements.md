@@ -4,6 +4,17 @@
 
 The beacons feature provides a comprehensive system for underwater positioning beacons that can operate either floating on the surface or anchored at depth. These beacons serve as reference points for the underwater positioning system by broadcasting their precise positions to underwater receivers. The system includes GPS positioning capabilities, power management with monitoring, and cellular communication for remote monitoring and control.
 
+The beacon system is designed to run on microcomputer hardware such as ESP01 or similar chips. This hardware constraint means the system has more computational resources than typical embedded systems but significantly less than personal computers, requiring efficient resource utilization and optimized code design.
+
+**Hardware Constraints:**
+
+- Limited RAM (typically 32-80KB available for application code)
+- Flash storage constraints (typically 512KB-4MB total)
+- Power consumption critical for battery operation
+- GPIO pin limitations requiring efficient hardware interface design
+- Single-core processing requiring cooperative multitasking
+- WiFi/cellular radio power consumption significantly impacts battery life
+
 ## Requirements
 
 ### Requirement 1
@@ -89,3 +100,15 @@ The beacons feature provides a comprehensive system for underwater positioning b
 3. WHEN invalid configuration is received THEN the beacon SHALL reject changes and report specific validation errors
 4. WHEN configuration changes affect safety THEN the beacon SHALL require confirmation before applying critical changes
 5. WHEN factory reset is requested THEN the beacon SHALL restore default settings and confirm reset completion
+
+### Requirement 8
+
+**User Story:** As a developer, I want the beacon system to operate efficiently within microcomputer hardware constraints, so that the system can run reliably on ESP01-class devices with limited resources.
+
+#### Acceptance Criteria
+
+1. WHEN operating THEN the beacon SHALL maintain total RAM usage below 70% of available application memory to prevent system instability
+2. WHEN managing power THEN the beacon SHALL implement aggressive power management including radio sleep modes, CPU frequency scaling, and peripheral power gating
+3. WHEN interfacing with hardware THEN the beacon SHALL multiplex GPIO pins efficiently to support GPS, transceiver, power monitoring, and status indicators within pin limitations
+4. WHEN processing data THEN the beacon SHALL use streaming algorithms and avoid large memory allocations to minimize heap fragmentation
+5. WHEN radio is active THEN the beacon SHALL minimize transmission duration and implement duty cycling to reduce average power consumption by at least 80%

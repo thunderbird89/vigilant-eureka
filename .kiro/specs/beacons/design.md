@@ -4,6 +4,47 @@
 
 The beacons system provides autonomous underwater positioning reference points that broadcast their precise locations to underwater receivers. The system consists of surface-floating or depth-anchored beacons equipped with GPS receivers, power management systems, and long-range communication capabilities. The design emphasizes code reuse through a shared library architecture, robust power management, and reliable communication protocols.
 
+The system is specifically designed for ESP01-class microcomputers with significant resource constraints. This requires careful attention to memory usage patterns, power optimization strategies, and efficient hardware interface multiplexing to achieve reliable operation within the available resources.
+
+## Hardware Constraints and Optimization
+
+### Memory Management Strategy
+
+**RAM Optimization (32-80KB available):**
+- Use stack-allocated data structures where possible
+- Implement object pooling for frequently allocated/deallocated objects
+- Stream processing for large data sets to avoid buffering
+- Minimize use of dynamic allocations during runtime
+- Pre-allocate critical data structures at startup
+
+**Flash Storage Optimization (512KB-4MB):**
+- Compress configuration data and logs
+- Use efficient serialization formats (bincode vs JSON)
+- Implement circular logging with automatic cleanup
+- Store only essential historical data locally
+
+### Power Management Architecture
+
+**Radio Power Optimization:**
+- Implement aggressive duty cycling (radio active <20% of time)
+- Use deep sleep modes between transmissions
+- Batch communication operations to minimize radio wake cycles
+- Implement adaptive transmission power based on signal conditions
+
+**CPU Power Management:**
+- Dynamic frequency scaling based on workload
+- Sleep modes during idle periods
+- Interrupt-driven architecture to minimize active polling
+- Power gating for unused peripherals
+
+### GPIO Pin Multiplexing Strategy
+
+**Shared Pin Usage (ESP01 has only 4 usable GPIO pins):**
+- SPI bus sharing between GPS and transceiver modules
+- I2C for power monitoring and sensor interfaces
+- Time-division multiplexing for status LEDs and configuration inputs
+- Software-controlled power switching for peripheral modules
+
 ## Architecture
 
 ### High-Level Architecture

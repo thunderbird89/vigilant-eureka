@@ -6,6 +6,7 @@ pub mod transceiver_interface;
 pub mod coordinate_system;
 pub mod error_handling;
 pub mod config;
+pub mod gps_manager;
 
 // Re-export commonly used types for convenience
 pub use message_parser::{
@@ -29,4 +30,8 @@ pub use error_handling::{
 };
 pub use config::{
     SystemConfig, AnchorConfig, PositioningConfig, RuntimeParameterManager
+};
+pub use gps_manager::{
+    GpsManager, GpsPosition, GpsConfig, GpsError, GpsStatus, 
+    BasicGpsManager, MockGpsManager
 };

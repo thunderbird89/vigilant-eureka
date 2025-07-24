@@ -1,130 +1,131 @@
 // Beacon system main application
 // Uses shared-positioning library for common functionality
 
+mod beacon_controller;
+
+use beacon_controller::{BeaconController, BeaconConfig, MessageVersion, EmergencyConfig};
 use shared_positioning::{
     MessageBuilder, TransceiverInterface, MockTransceiver, GeodeticPosition,
-    SystemConfig, ErrorLogger, ErrorSeverity, ConsoleLogHandler
+    SystemConfig, ErrorLogger, ErrorSeverity, ConsoleLogHandler,
+    GpsConfig, PowerConfig, CommunicationConfig,
+    MockGpsManager, MockPowerManager, MockCommunicationManager
 };
 use uuid::Uuid;
 use std::time::Duration;
 
 fn main() {
-    println!("=== BEACON SYSTEM DEMO ===");
+    println!("=== BEACON CONTROLLER DEMO ===");
     
     // Initialize error logging
     let mut error_logger = ErrorLogger::new(100, ErrorSeverity::Warning);
     error_logger.add_output_handler(Box::new(ConsoleLogHandler::new(ErrorSeverity::Info)));
     
     // Create beacon configuration
-    let config = SystemConfig::new();
-    println!("Beacon system initialized with sound speed: {:.1} m/s", config.sound_speed_m_per_s);
-    
-    // Initialize message builder for beacon transmissions
-    let message_builder = MessageBuilder::new();
-    
-    // Create mock transceiver for demonstration
-    let mut transceiver = MockTransceiver::new(1);
-    let transceiver_config = shared_positioning::TransceiverConfig::default();
-    
-    if let Err(e) = transceiver.configure(transceiver_config) {
-        eprintln!("Failed to configure transceiver: {}", e);
-        return;
-    }
-    
-    // Generate unique beacon ID
-    let beacon_uuid = Uuid::new_v4();
-    println!("Beacon UUID: {}", beacon_uuid);
-    
-    // Beacon position (example coordinates)
-    let beacon_position = GeodeticPosition {
-        latitude: 32.123456,
-        longitude: -117.654321,
-        depth: 5.0,
+    let beacon_config = BeaconConfig {
+        beacon_id: Uuid::new_v4(),
+        transmission_interval_ms: 5000, // 5 seconds
+        message_version: MessageVersion::V3,
+        gps_config: GpsConfig::default(),
+        power_config: PowerConfig::default(),
+        communication_config: CommunicationConfig::default(),
+        emergency_config: EmergencyConfig::default(),
     };
     
-    println!("Beacon position: lat={:.6}, lon={:.6}, depth={:.1}m", 
-             beacon_position.latitude, beacon_position.longitude, beacon_position.depth);
+    println!("Beacon ID: {}", beacon_config.beacon_id);
+    println!("Transmission interval: {}ms", beacon_config.transmission_interval_ms);
     
-    // Demonstrate message building and transmission
-    println!("\n=== MESSAGE TRANSMISSION DEMO ===");
-    
-    for sequence in 1..=5 {
-        // Build V3 message with UUID
-        match message_builder.build_v3_message(beacon_uuid, beacon_position, 200, sequence) {
-            Ok(message_data) => {
-                println!("Built V3 message #{} ({} bytes)", sequence, message_data.len());
-                
-                // Transmit message
-                match transceiver.transmit_message(&message_data) {
-                    Ok(()) => {
-                        let tx_status = transceiver.get_transmission_status();
-                        println!("  Transmitted successfully (total: {})", tx_status.transmission_count);
-                    }
-                    Err(e) => {
-                        eprintln!("  Transmission failed: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to build message: {}", e);
-            }
-        }
-        
-        // Simulate transmission interval
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    
-    // Show transceiver status
-    let status = transceiver.get_status();
-    println!("\n=== TRANSCEIVER STATUS ===");
-    println!("Connected: {}", status.is_connected);
-    if let Some(signal) = status.signal_strength {
-        println!("Signal strength: {}", signal);
-    }
-    if let Some(battery) = status.battery_level {
-        println!("Battery level: {}%", battery);
-    }
-    
-    let tx_status = transceiver.get_transmission_status();
-    println!("Messages transmitted: {}", tx_status.transmission_count);
-    println!("Transmission failures: {}", tx_status.transmission_failures);
-    println!("Current power level: {}", tx_status.current_power_level);
-    
-    // Demonstrate backward compatibility with V1 and V2 messages
-    println!("\n=== BACKWARD COMPATIBILITY DEMO ===");
-    
-    // Build V1 message (legacy format with u16 ID)
-    let legacy_id = (beacon_uuid.as_bytes()[0] as u16) << 8 | (beacon_uuid.as_bytes()[1] as u16);
-    match message_builder.build_v1_message(legacy_id, beacon_position, 200, 100) {
-        Ok(v1_message) => {
-            println!("Built V1 message ({} bytes) for legacy compatibility", v1_message.len());
-            if let Err(e) = transceiver.transmit_message(&v1_message) {
-                eprintln!("V1 transmission failed: {}", e);
-            }
-        }
+    // Create mock managers for demonstration
+    let gps_manager = match MockGpsManager::with_test_positions(beacon_config.gps_config.clone()) {
+        Ok(manager) => manager,
         Err(e) => {
-            eprintln!("Failed to build V1 message: {}", e);
+            eprintln!("Failed to create GPS manager: {}", e);
+            return;
         }
-    }
+    };
     
-    // Build V2 message (compact format)
-    match message_builder.build_v2_message(legacy_id, beacon_position, 200, 101) {
-        Ok(v2_message) => {
-            println!("Built V2 message ({} bytes) for compact transmission", v2_message.len());
-            if let Err(e) = transceiver.transmit_message(&v2_message) {
-                eprintln!("V2 transmission failed: {}", e);
-            }
-        }
+    let power_manager = MockPowerManager::new();
+    let communication_manager = MockCommunicationManager::new();
+    let transceiver = MockTransceiver::new(1);
+    
+    // Create beacon controller
+    let mut beacon_controller = match BeaconController::new(
+        beacon_config,
+        gps_manager,
+        power_manager,
+        communication_manager,
+        transceiver,
+    ) {
+        Ok(controller) => controller,
         Err(e) => {
-            eprintln!("Failed to build V2 message: {}", e);
+            eprintln!("Failed to create beacon controller: {}", e);
+            return;
+        }
+    };
+    
+    println!("\n=== BEACON CONTROLLER STATUS ===");
+    let initial_status = beacon_controller.get_status();
+    println!("Initial state: {:?}", initial_status.operational_state);
+    println!("GPS status: {:?}", initial_status.gps_status);
+    println!("Battery capacity: {:.1}%", initial_status.battery_status.capacity_percent);
+    println!("Uptime: {:?}", initial_status.uptime);
+    
+    // Demonstrate configuration update
+    println!("\n=== CONFIGURATION UPDATE DEMO ===");
+    let mut updated_config = beacon_controller.get_config().clone();
+    updated_config.transmission_interval_ms = 3000; // Change to 3 seconds
+    updated_config.message_version = MessageVersion::V2;
+    
+    match beacon_controller.update_configuration(updated_config) {
+        Ok(()) => println!("Configuration updated successfully"),
+        Err(e) => eprintln!("Configuration update failed: {}", e),
+    }
+    
+    // Demonstrate emergency handling
+    println!("\n=== EMERGENCY HANDLING DEMO ===");
+    match beacon_controller.handle_emergency(beacon_controller::EmergencyType::BatteryDepleted) {
+        Ok(()) => println!("Emergency handled successfully"),
+        Err(e) => eprintln!("Emergency handling failed: {}", e),
+    }
+    
+    let emergency_status = beacon_controller.get_status();
+    println!("State after emergency: {:?}", emergency_status.operational_state);
+    
+    // Demonstrate different emergency types
+    println!("\n=== ADDITIONAL EMERGENCY SCENARIOS ===");
+    
+    let emergency_scenarios = vec![
+        beacon_controller::EmergencyType::GpsSignalLost,
+        beacon_controller::EmergencyType::TemperatureExtreme,
+        beacon_controller::EmergencyType::CommunicationLost,
+    ];
+    
+    for emergency in emergency_scenarios {
+        println!("Testing emergency: {:?}", emergency);
+        match beacon_controller.handle_emergency(emergency) {
+            Ok(()) => println!("  Emergency handled successfully"),
+            Err(e) => eprintln!("  Emergency handling failed: {}", e),
         }
     }
     
-    println!("\n=== BEACON DEMO COMPLETE ===");
-    println!("Shared library components used successfully:");
-    println!("  - MessageBuilder for V1, V2, and V3 message formats");
-    println!("  - TransceiverInterface for hardware abstraction");
-    println!("  - GeodeticPosition for coordinate representation");
-    println!("  - SystemConfig for configuration management");
-    println!("  - Error handling and logging systems");
+    // Show final status
+    println!("\n=== FINAL BEACON STATUS ===");
+    let final_status = beacon_controller.get_status();
+    println!("Final state: {:?}", final_status.operational_state);
+    println!("GPS status: {:?}", final_status.gps_status);
+    println!("Battery capacity: {:.1}%", final_status.battery_status.capacity_percent);
+    println!("Messages sent: {}", final_status.transmission_stats.messages_sent);
+    println!("System health:");
+    println!("  CPU usage: {:.1}%", final_status.system_health.cpu_usage_percent);
+    println!("  Memory usage: {:.1}%", final_status.system_health.memory_usage_percent);
+    println!("  GPS signal quality: {}", final_status.system_health.gps_signal_quality);
+    println!("  Comm signal quality: {}", final_status.system_health.comm_signal_quality);
+    
+    println!("\n=== BEACON CONTROLLER DEMO COMPLETE ===");
+    println!("Beacon controller features demonstrated:");
+    println!("  - Configuration management and validation");
+    println!("  - Operational state management");
+    println!("  - Emergency handling and recovery");
+    println!("  - GPS, power, and communication coordination");
+    println!("  - System health monitoring");
+    println!("  - Comprehensive error handling");
 }

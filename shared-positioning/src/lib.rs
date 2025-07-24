@@ -43,5 +43,6 @@ pub use power_manager::{
 };
 pub use communication_manager::{
     CommunicationManager, CommunicationConfig, StatusReport, ConfigUpdate,
-    SystemHealth, ErrorLogEntry, BasicCommunicationManager, MockCommunicationManager
+    SystemHealth, ErrorLogEntry, TransmissionStats as CommTransmissionStats, 
+    ErrorSeverity as CommErrorSeverity, BasicCommunicationManager, MockCommunicationManager
 };

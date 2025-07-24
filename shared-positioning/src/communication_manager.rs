@@ -40,7 +40,7 @@ pub trait CommunicationManager {
 }
 
 /// Configuration for communication manager
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommunicationConfig {
     /// Connection interval in hours (1-24)
     pub connection_interval_hours: u32,

@@ -112,7 +112,7 @@ impl BatteryStatus {
 }
 
 /// Power configuration parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PowerConfig {
     pub low_battery_threshold_percent: f32,
     pub critical_battery_threshold_percent: f32,

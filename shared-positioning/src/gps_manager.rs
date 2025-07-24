@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, Instant};
 use serde::{Deserialize, Serialize};
 
 /// GPS position data with accuracy and timing information
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpsPosition {
     pub latitude: f64,
     pub longitude: f64,
@@ -13,7 +13,7 @@ pub struct GpsPosition {
 }
 
 /// GPS configuration parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpsConfig {
     pub acquisition_timeout_s: u32,
     pub update_interval_s: u32,

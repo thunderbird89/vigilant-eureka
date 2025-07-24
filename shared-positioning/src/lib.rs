@@ -15,7 +15,8 @@ pub use message_parser::{
 };
 pub use transceiver_interface::{
     TransceiverInterface, CommError, TransceiverStatus, TransceiverConfig, 
-    PowerMode, MockTransceiver, SerialTransceiver
+    PowerMode, MockTransceiver, SerialTransceiver, TransmissionStatus,
+    TransmissionStats, EnvironmentalConditions, ConnectionStats, BaseTransceiver
 };
 pub use coordinate_system::{
     CoordinateSystemManager, MultiCoordinateSystemManager, CoordinateSystemType,

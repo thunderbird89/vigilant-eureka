@@ -16,7 +16,7 @@
   - Create unit tests for message building and validation
   - _Requirements: 1.1, 1.2, 1.4, 5.1_
 
-- [ ] 3. Extend transceiver interface for transmission capabilities
+- [x] 3. Extend transceiver interface for transmission capabilities
 
   - Add transmit_message method to TransceiverInterface trait
   - Implement transmission power control and status monitoring

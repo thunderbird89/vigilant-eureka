@@ -12,7 +12,10 @@ use shared_positioning::{
     MessageBuilder, GeodeticPosition, GpsPosition, GpsConfig, GpsError, GpsStatus,
     PowerConfig, PowerError, PowerOperationMode, BatteryStatus,
     CommunicationConfig, StatusReport, SystemHealth, CommTransmissionStats,
-    ErrorLogEntry, CommErrorSeverity, CommError
+    ErrorLogEntry, CommErrorSeverity, CommError, TransmissionManager,
+    TransmissionConfig, TransmissionError,
+    TransmissionStatistics, TransmissionMessageVersion, TransmissionPriority,
+    EnvironmentalConditions
 };
 
 /// Beacon-specific error types
@@ -59,29 +62,13 @@ impl From<CommError> for BeaconError {
     }
 }
 
-/// Transmission-specific error types
-#[derive(Debug, Clone)]
-pub enum TransmissionError {
-    TransceiverFault,
-    MessageBuildFailed,
-    PowerInsufficient,
-    SchedulingConflict,
-    HardwareTimeout,
-}
-
-impl std::fmt::Display for TransmissionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TransmissionError::TransceiverFault => write!(f, "Transceiver fault"),
-            TransmissionError::MessageBuildFailed => write!(f, "Message build failed"),
-            TransmissionError::PowerInsufficient => write!(f, "Insufficient power"),
-            TransmissionError::SchedulingConflict => write!(f, "Scheduling conflict"),
-            TransmissionError::HardwareTimeout => write!(f, "Hardware timeout"),
-        }
+impl From<TransmissionError> for BeaconError {
+    fn from(error: TransmissionError) -> Self {
+        BeaconError::TransmissionError(error)
     }
 }
 
-impl std::error::Error for TransmissionError {}
+
 
 /// Configuration-specific error types
 #[derive(Debug, Clone)]
@@ -244,12 +231,15 @@ where
     power_manager: P,
     communication_manager: C,
     transceiver: T,
-    message_builder: MessageBuilder,
+    transmission_config: TransmissionConfig,
+    transmission_statistics: TransmissionStatistics,
     start_time: SystemTime,
     last_transmission: Option<SystemTime>,
     last_gps_update: Option<SystemTime>,
     last_communication: Option<SystemTime>,
     transmission_sequence: u16,
+    current_power_level: u8,
+    environmental_conditions: EnvironmentalConditions,
     error_log: Vec<ErrorLogEntry>,
     control_sender: Option<Sender<ControlMessage>>,
     control_receiver: Option<Receiver<ControlMessage>>,
@@ -283,12 +273,15 @@ where
             power_manager,
             communication_manager,
             transceiver,
-            message_builder: MessageBuilder::new(),
+            transmission_config: TransmissionConfig::default(),
+            transmission_statistics: TransmissionStatistics::default(),
             start_time: SystemTime::now(),
             last_transmission: None,
             last_gps_update: None,
             last_communication: None,
             transmission_sequence: 0,
+            current_power_level: 128,
+            environmental_conditions: EnvironmentalConditions::default(),
             error_log: Vec::new(),
             control_sender: Some(sender),
             control_receiver: Some(receiver),
@@ -602,30 +595,31 @@ where
         } else {
             // Use last known position or default
             self.log_warning("No GPS position available for transmission");
-            return Err(BeaconError::TransmissionError(TransmissionError::MessageBuildFailed));
+            return Err(BeaconError::TransmissionError(TransmissionError::MessageBuildFailed("No GPS position available".to_string())));
         };
         
         // Calculate signal quality based on GPS and power status
         let signal_quality = self.calculate_signal_quality();
         
-        // Build message based on configured version
+        // Build message based on configured version using MessageBuilder
+        let message_builder = MessageBuilder::new();
         let message_data = match self.config.message_version {
             MessageVersion::V1 => {
                 let legacy_id = self.beacon_id_to_u16();
-                self.message_builder.build_v1_message(legacy_id, position, signal_quality, self.transmission_sequence)
+                message_builder.build_v1_message(legacy_id, position, signal_quality, self.transmission_sequence)
             }
             MessageVersion::V2 => {
                 let legacy_id = self.beacon_id_to_u16();
-                self.message_builder.build_v2_message(legacy_id, position, signal_quality, self.transmission_sequence)
+                message_builder.build_v2_message(legacy_id, position, signal_quality, self.transmission_sequence)
             }
             MessageVersion::V3 => {
-                self.message_builder.build_v3_message(self.config.beacon_id, position, signal_quality, self.transmission_sequence)
+                message_builder.build_v3_message(self.config.beacon_id, position, signal_quality, self.transmission_sequence)
             }
-        }.map_err(|_| BeaconError::TransmissionError(TransmissionError::MessageBuildFailed))?;
+        }.map_err(|_| BeaconError::TransmissionError(TransmissionError::MessageBuildFailed("Failed to build message".to_string())))?;
         
         // Transmit message
         self.transceiver.transmit_message(&message_data)
-            .map_err(|_| BeaconError::TransmissionError(TransmissionError::TransceiverFault))?;
+            .map_err(|_| BeaconError::TransmissionError(TransmissionError::TransceiverFault("Failed to transmit message".to_string())))?;
         
         // Update transmission tracking
         self.transmission_sequence = self.transmission_sequence.wrapping_add(1);

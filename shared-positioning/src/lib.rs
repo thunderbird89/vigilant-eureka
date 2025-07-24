@@ -9,6 +9,7 @@ pub mod config;
 pub mod gps_manager;
 pub mod power_manager;
 pub mod communication_manager;
+pub mod transmission_manager;
 
 // Re-export commonly used types for convenience
 pub use message_parser::{
@@ -45,4 +46,8 @@ pub use communication_manager::{
     CommunicationManager, CommunicationConfig, StatusReport, ConfigUpdate,
     SystemHealth, ErrorLogEntry, TransmissionStats as CommTransmissionStats, 
     ErrorSeverity as CommErrorSeverity, BasicCommunicationManager, MockCommunicationManager
+};
+pub use transmission_manager::{
+    TransmissionManager, TransmissionConfig, TransmissionError, TransmissionStatistics,
+    MessageVersion as TransmissionMessageVersion, TransmissionPriority, ScheduledTransmission
 };

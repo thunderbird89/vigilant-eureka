@@ -6,6 +6,7 @@ pub mod transceiver_interface;
 pub mod coordinate_system;
 pub mod error_handling;
 pub mod config;
+pub mod beacon_config;
 pub mod gps_manager;
 pub mod power_manager;
 pub mod communication_manager;
@@ -29,7 +30,7 @@ pub use coordinate_system::{
 pub use error_handling::{
     PositioningError, ErrorSeverity, ErrorContext, ErrorRecoveryManager,
     ErrorLogger, RecoveryStrategy, ConsoleLogHandler, GeometryIssue, 
-    CriticalFailureType, TimingIssue
+    CriticalFailureType, TimingIssue, ConfigError, Result
 };
 pub use config::{
     SystemConfig, AnchorConfig, PositioningConfig, RuntimeParameterManager
@@ -50,4 +51,11 @@ pub use communication_manager::{
 pub use transmission_manager::{
     TransmissionManager, TransmissionConfig, TransmissionError, TransmissionStatistics,
     MessageVersion as TransmissionMessageVersion, TransmissionPriority, ScheduledTransmission
+};
+pub use beacon_config::{
+    BeaconConfig, BeaconConfigManager, BeaconConfigBackup, ConfigMigrator, ConfigTemplates,
+    TransmissionConfig as BeaconTransmissionConfig, GpsConfig as BeaconGpsConfig,
+    PowerConfig as BeaconPowerConfig, CommunicationConfig as BeaconCommunicationConfig,
+    EmergencyConfig, HardwareConfig, MessageVersion as BeaconMessageVersion,
+    ConfigExportFormat, ConfigValidator
 };

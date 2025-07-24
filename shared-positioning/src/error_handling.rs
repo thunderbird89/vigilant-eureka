@@ -7,6 +7,52 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::transceiver_interface::CommError;
 use crate::message_parser::MessageParseError;
 
+/// Configuration-specific error types
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigError {
+    /// Configuration validation failed
+    ValidationFailed(String),
+    /// Configuration file I/O error
+    IoError(String),
+    /// Configuration parsing error
+    ParseError(String),
+    /// Configuration serialization error
+    SerializationError(String),
+    /// Configuration integrity check failed
+    IntegrityError(String),
+    /// Configuration migration error
+    MigrationError(String),
+    /// Configuration field not found
+    FieldNotFound(String),
+    /// Configuration value out of range
+    ValueOutOfRange { field: String, value: String, range: String },
+    /// Configuration dependency error
+    DependencyError(String),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::ValidationFailed(msg) => write!(f, "Configuration validation failed: {}", msg),
+            ConfigError::IoError(msg) => write!(f, "Configuration I/O error: {}", msg),
+            ConfigError::ParseError(msg) => write!(f, "Configuration parse error: {}", msg),
+            ConfigError::SerializationError(msg) => write!(f, "Configuration serialization error: {}", msg),
+            ConfigError::IntegrityError(msg) => write!(f, "Configuration integrity error: {}", msg),
+            ConfigError::MigrationError(msg) => write!(f, "Configuration migration error: {}", msg),
+            ConfigError::FieldNotFound(field) => write!(f, "Configuration field not found: {}", field),
+            ConfigError::ValueOutOfRange { field, value, range } => {
+                write!(f, "Configuration value out of range: {} = {} (expected: {})", field, value, range)
+            }
+            ConfigError::DependencyError(msg) => write!(f, "Configuration dependency error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// Result type for configuration operations
+pub type Result<T> = std::result::Result<T, ConfigError>;
+
 /// Comprehensive error classification for positioning system
 #[derive(Debug, Clone, PartialEq)]
 pub enum PositioningError {

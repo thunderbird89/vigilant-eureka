@@ -762,6 +762,32 @@ impl MessageBuilder {
         Ok(data)
     }
 
+    /// Build V1 message format with UUID (converts UUID to u16 for compatibility)
+    pub fn build_v1_message_with_uuid(
+        &self,
+        beacon_uuid: Uuid,
+        position: GeodeticPosition,
+        signal_quality: u8,
+        sequence: u16,
+    ) -> Result<Vec<u8>, MessageParseError> {
+        // Convert UUID to u16 for V1 compatibility (use first 2 bytes)
+        let beacon_id = (beacon_uuid.as_bytes()[0] as u16) << 8 | (beacon_uuid.as_bytes()[1] as u16);
+        self.build_v1_message(beacon_id, position, signal_quality, sequence)
+    }
+
+    /// Build V2 message format with UUID (converts UUID to u16 for compatibility)
+    pub fn build_v2_message_with_uuid(
+        &self,
+        beacon_uuid: Uuid,
+        position: GeodeticPosition,
+        signal_quality: u8,
+        sequence: u16,
+    ) -> Result<Vec<u8>, MessageParseError> {
+        // Convert UUID to u16 for V2 compatibility (use first 2 bytes)
+        let beacon_id = (beacon_uuid.as_bytes()[0] as u16) << 8 | (beacon_uuid.as_bytes()[1] as u16);
+        self.build_v2_message(beacon_id, position, signal_quality, sequence)
+    }
+
     /// Validate message data before transmission
     pub fn validate_message_data(&self, data: &[u8]) -> Result<(), MessageParseError> {
         if data.is_empty() {
@@ -843,6 +869,41 @@ mod tests {
     }
 
     #[test]
+    fn test_message_builder_v2() {
+        let builder = MessageBuilder::new();
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+
+        let message_data = builder.build_v2_message(123, position, 200, 456).unwrap();
+        
+        // Validate the built message
+        assert!(builder.validate_message_data(&message_data).is_ok());
+        
+        // Parse it back to verify correctness
+        let mut parser = MessageParser::new();
+        let raw_message = RawMessage {
+            data: message_data,
+            timestamp_received: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        let parsed = parser.parse_message(&raw_message).unwrap();
+        assert_eq!(parsed.anchor_id, 123);
+        assert_eq!(parsed.signal_quality, 200);
+        assert_eq!(parsed.message_sequence, 456);
+        assert_eq!(parsed.message_version, 2);
+        
+        // Check position accuracy (V2 has reduced precision)
+        assert!((parsed.position.latitude - position.latitude).abs() < 0.000001);
+        assert!((parsed.position.longitude - position.longitude).abs() < 0.000001);
+        assert!((parsed.position.depth - position.depth).abs() < 0.001);
+    }
+
+    #[test]
     fn test_message_builder_v3_with_uuid() {
         let builder = MessageBuilder::new();
         let beacon_uuid = Uuid::new_v4();
@@ -870,6 +931,327 @@ mod tests {
         assert_eq!(parsed.signal_quality, 200);
         assert_eq!(parsed.message_sequence, 456);
         assert_eq!(parsed.message_version, 3);
+        
+        // Check position accuracy (V3 has full precision)
+        assert!((parsed.position.latitude - position.latitude).abs() < 1e-10);
+        assert!((parsed.position.longitude - position.longitude).abs() < 1e-10);
+        assert!((parsed.position.depth - position.depth).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_message_validation() {
+        let builder = MessageBuilder::new();
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+
+        // Test valid message
+        let valid_message = builder.build_v1_message(123, position, 200, 456).unwrap();
+        assert!(builder.validate_message_data(&valid_message).is_ok());
+
+        // Test invalid checksum
+        let mut invalid_checksum = valid_message.clone();
+        let len = invalid_checksum.len();
+        invalid_checksum[len - 1] ^= 0xFF; // Corrupt checksum
+        assert!(builder.validate_message_data(&invalid_checksum).is_err());
+
+        // Test invalid length
+        let mut invalid_length = valid_message.clone();
+        invalid_length.pop(); // Remove last byte
+        assert!(builder.validate_message_data(&invalid_length).is_err());
+
+        // Test empty message
+        assert!(builder.validate_message_data(&[]).is_err());
+    }
+
+    #[test]
+    fn test_checksum_calculation() {
+        let builder = MessageBuilder::new();
+        
+        // Test known data
+        let test_data = b"Hello, World!";
+        let checksum1 = builder.checksum_calculator.calculate_checksum(test_data);
+        let checksum2 = builder.checksum_calculator.calculate_checksum(test_data);
+        
+        // Checksum should be consistent
+        assert_eq!(checksum1, checksum2);
+        
+        // Different data should produce different checksums
+        let different_data = b"Hello, World?";
+        let checksum3 = builder.checksum_calculator.calculate_checksum(different_data);
+        assert_ne!(checksum1, checksum3);
+    }
+
+    #[test]
+    fn test_message_builder_edge_cases() {
+        let builder = MessageBuilder::new();
+        
+        // Test extreme position values
+        let extreme_position = GeodeticPosition {
+            latitude: 89.999999,
+            longitude: 179.999999,
+            depth: 10000.0,
+        };
+        
+        // Should handle extreme but valid positions
+        assert!(builder.build_v1_message(1, extreme_position, 255, 65535).is_ok());
+        assert!(builder.build_v2_message(1, extreme_position, 255, 65535).is_ok());
+        assert!(builder.build_v3_message(Uuid::new_v4(), extreme_position, 255, 65535).is_ok());
+        
+        // Test minimum values
+        let min_position = GeodeticPosition {
+            latitude: -89.999999,
+            longitude: -179.999999,
+            depth: 0.0,
+        };
+        
+        assert!(builder.build_v1_message(1, min_position, 0, 0).is_ok());
+        assert!(builder.build_v2_message(1, min_position, 0, 0).is_ok());
+        assert!(builder.build_v3_message(Uuid::new_v4(), min_position, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn test_message_format_compatibility() {
+        let builder = MessageBuilder::new();
+        let mut parser = MessageParser::new();
+        
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+        
+        // Test that all message formats can be parsed correctly
+        let v1_data = builder.build_v1_message(123, position, 200, 456).unwrap();
+        let v2_data = builder.build_v2_message(123, position, 200, 456).unwrap();
+        let v3_data = builder.build_v3_message(Uuid::new_v4(), position, 200, 456).unwrap();
+        
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        
+        let v1_raw = RawMessage {
+            data: v1_data,
+            timestamp_received: timestamp,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        let v2_raw = RawMessage {
+            data: v2_data,
+            timestamp_received: timestamp,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        let v3_raw = RawMessage {
+            data: v3_data,
+            timestamp_received: timestamp,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        // All should parse successfully
+        assert!(parser.parse_message(&v1_raw).is_ok());
+        assert!(parser.parse_message(&v2_raw).is_ok());
+        assert!(parser.parse_message(&v3_raw).is_ok());
+    }
+
+    #[test]
+    fn test_uuid_beacon_id_handling() {
+        let builder = MessageBuilder::new();
+        let mut parser = MessageParser::new();
+        
+        let beacon_uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+        
+        let message_data = builder.build_v3_message(beacon_uuid, position, 200, 456).unwrap();
+        
+        let raw_message = RawMessage {
+            data: message_data,
+            timestamp_received: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        let parsed = parser.parse_message(&raw_message).unwrap();
+        
+        // The anchor_id should be derived from the UUID (first 2 bytes)
+        let expected_anchor_id = (beacon_uuid.as_bytes()[0] as u16) << 8 | (beacon_uuid.as_bytes()[1] as u16);
+        assert_eq!(parsed.anchor_id, expected_anchor_id);
+    }
+
+    #[test]
+    fn test_message_sequence_rollover() {
+        let builder = MessageBuilder::new();
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+        
+        // Test sequence number at maximum value
+        let max_seq_message = builder.build_v1_message(123, position, 200, u16::MAX).unwrap();
+        assert!(builder.validate_message_data(&max_seq_message).is_ok());
+        
+        // Test sequence number rollover (should work fine)
+        let rollover_message = builder.build_v1_message(123, position, 200, 0).unwrap();
+        assert!(builder.validate_message_data(&rollover_message).is_ok());
+    }
+
+    #[test]
+    fn test_message_builder_comprehensive_validation() {
+        let builder = MessageBuilder::new();
+        let mut parser = MessageParser::new();
+        
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+        
+        // Test all message formats with comprehensive validation
+        let formats = vec![
+            ("V1", builder.build_v1_message(123, position, 200, 456).unwrap()),
+            ("V2", builder.build_v2_message(123, position, 200, 456).unwrap()),
+            ("V3", builder.build_v3_message(Uuid::new_v4(), position, 200, 456).unwrap()),
+        ];
+        
+        for (format_name, message_data) in formats {
+            // Validate message structure
+            assert!(builder.validate_message_data(&message_data).is_ok(), 
+                    "Failed to validate {} message", format_name);
+            
+            // Parse and verify round-trip consistency
+            let raw_message = RawMessage {
+                data: message_data.clone(),
+                timestamp_received: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+                transceiver_id: 1,
+                signal_strength: Some(200),
+            };
+            
+            let parsed = parser.parse_message(&raw_message).unwrap();
+            assert_eq!(parsed.signal_quality, 200, "{} signal quality mismatch", format_name);
+            assert_eq!(parsed.message_sequence, 456, "{} sequence mismatch", format_name);
+            
+            // Verify position accuracy based on format
+            match format_name {
+                "V1" | "V3" => {
+                    // Full precision formats
+                    assert!((parsed.position.latitude - position.latitude).abs() < 1e-10, 
+                            "{} latitude precision loss", format_name);
+                    assert!((parsed.position.longitude - position.longitude).abs() < 1e-10, 
+                            "{} longitude precision loss", format_name);
+                    assert!((parsed.position.depth - position.depth).abs() < 1e-6, 
+                            "{} depth precision loss", format_name);
+                }
+                "V2" => {
+                    // Reduced precision format
+                    assert!((parsed.position.latitude - position.latitude).abs() < 0.000001, 
+                            "{} latitude precision acceptable", format_name);
+                    assert!((parsed.position.longitude - position.longitude).abs() < 0.000001, 
+                            "{} longitude precision acceptable", format_name);
+                    assert!((parsed.position.depth - position.depth).abs() < 0.001, 
+                            "{} depth precision acceptable", format_name);
+                }
+                _ => panic!("Unknown format: {}", format_name),
+            }
+        }
+    }
+
+    #[test]
+    fn test_message_builder_error_conditions() {
+        let builder = MessageBuilder::new();
+        
+        // Test validation with corrupted data
+        let mut corrupted_data = vec![1u8; 36]; // V1 message length
+        corrupted_data[0] = 1; // Valid version
+        // Leave rest as invalid data
+        
+        // Should fail validation due to invalid checksum
+        assert!(builder.validate_message_data(&corrupted_data).is_err());
+        
+        // Test with invalid version
+        let mut invalid_version = vec![0u8; 36];
+        invalid_version[0] = 99; // Invalid version
+        assert!(builder.validate_message_data(&invalid_version).is_err());
+        
+        // Test with wrong length for version
+        let wrong_length = vec![1u8; 20]; // Too short for V1
+        assert!(builder.validate_message_data(&wrong_length).is_err());
+    }
+
+    #[test]
+    fn test_uuid_to_anchor_id_conversion() {
+        let builder = MessageBuilder::new();
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+        
+        // Test specific UUID to ensure consistent conversion
+        let test_uuid = Uuid::parse_str("12345678-1234-5678-9abc-123456789abc").unwrap();
+        
+        // Build V1 and V2 messages with UUID
+        let v1_message = builder.build_v1_message_with_uuid(test_uuid, position, 200, 456).unwrap();
+        let v2_message = builder.build_v2_message_with_uuid(test_uuid, position, 200, 456).unwrap();
+        
+        // Parse both messages
+        let mut parser = MessageParser::new();
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        
+        let v1_raw = RawMessage {
+            data: v1_message,
+            timestamp_received: timestamp,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        let v2_raw = RawMessage {
+            data: v2_message,
+            timestamp_received: timestamp,
+            transceiver_id: 1,
+            signal_strength: Some(200),
+        };
+        
+        let v1_parsed = parser.parse_message(&v1_raw).unwrap();
+        let v2_parsed = parser.parse_message(&v2_raw).unwrap();
+        
+        // Both should have the same anchor_id derived from UUID
+        assert_eq!(v1_parsed.anchor_id, v2_parsed.anchor_id);
+        
+        // Verify the conversion matches expected value
+        let expected_anchor_id = (test_uuid.as_bytes()[0] as u16) << 8 | (test_uuid.as_bytes()[1] as u16);
+        assert_eq!(v1_parsed.anchor_id, expected_anchor_id);
+    }
+
+    #[test]
+    fn test_message_builder_performance_characteristics() {
+        let builder = MessageBuilder::new();
+        let position = GeodeticPosition {
+            latitude: 32.123456,
+            longitude: -117.654321,
+            depth: 10.5,
+        };
+        
+        // Test message size characteristics
+        let v1_message = builder.build_v1_message(123, position, 200, 456).unwrap();
+        let v2_message = builder.build_v2_message(123, position, 200, 456).unwrap();
+        let v3_message = builder.build_v3_message(Uuid::new_v4(), position, 200, 456).unwrap();
+        
+        // Verify expected message sizes
+        assert_eq!(v1_message.len(), 36, "V1 message should be 36 bytes");
+        assert_eq!(v2_message.len(), 23, "V2 message should be 23 bytes (more compact)");
+        assert_eq!(v3_message.len(), 50, "V3 message should be 50 bytes (with UUID)");
+        
+        // V2 should be the most compact for bandwidth efficiency
+        assert!(v2_message.len() < v1_message.len(), "V2 should be more compact than V1");
+        assert!(v2_message.len() < v3_message.len(), "V2 should be more compact than V3");
     }
 }
 

@@ -9,7 +9,7 @@ use crate::message_parser::RawMessage;
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommError {
     /// Connection failed or lost
-    ConnectionFailed { details: String },
+    ConnectionFailed(String),
     /// Timeout waiting for data
     Timeout { timeout_ms: u64 },
     /// Invalid data received
@@ -19,19 +19,27 @@ pub enum CommError {
     /// Buffer overflow
     BufferOverflow { buffer_size: usize },
     /// Configuration error
-    ConfigurationError { parameter: String, details: String },
+    ConfigurationError(String),
     /// Checksum or integrity error
     IntegrityError { details: String },
     /// Transceiver not responding
     NoResponse { attempts: u32 },
     /// Unsupported operation
     UnsupportedOperation { operation: String },
+    /// Authentication failed
+    AuthenticationFailed,
+    /// Not connected to remote service
+    NotConnected,
+    /// Retry limit exceeded
+    RetryLimitExceeded,
+    /// Serialization/deserialization error
+    SerializationError(String),
 }
 
 impl std::fmt::Display for CommError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CommError::ConnectionFailed { details } => {
+            CommError::ConnectionFailed(details) => {
                 write!(f, "Connection failed: {}", details)
             }
             CommError::Timeout { timeout_ms } => {
@@ -46,8 +54,8 @@ impl std::fmt::Display for CommError {
             CommError::BufferOverflow { buffer_size } => {
                 write!(f, "Buffer overflow (size: {})", buffer_size)
             }
-            CommError::ConfigurationError { parameter, details } => {
-                write!(f, "Configuration error for {}: {}", parameter, details)
+            CommError::ConfigurationError(details) => {
+                write!(f, "Configuration error: {}", details)
             }
             CommError::IntegrityError { details } => {
                 write!(f, "Data integrity error: {}", details)
@@ -57,6 +65,18 @@ impl std::fmt::Display for CommError {
             }
             CommError::UnsupportedOperation { operation } => {
                 write!(f, "Unsupported operation: {}", operation)
+            }
+            CommError::AuthenticationFailed => {
+                write!(f, "Authentication failed")
+            }
+            CommError::NotConnected => {
+                write!(f, "Not connected to remote service")
+            }
+            CommError::RetryLimitExceeded => {
+                write!(f, "Retry limit exceeded")
+            }
+            CommError::SerializationError(details) => {
+                write!(f, "Serialization error: {}", details)
             }
         }
     }
@@ -209,11 +229,16 @@ impl TransmissionStats {
         
         // Count errors by type
         let error_type = match error {
-            CommError::ConnectionFailed { .. } => "ConnectionFailed",
+            CommError::ConnectionFailed(_) => "ConnectionFailed",
             CommError::Timeout { .. } => "Timeout",
             CommError::HardwareError { .. } => "HardwareError",
             CommError::BufferOverflow { .. } => "BufferOverflow",
             CommError::IntegrityError { .. } => "IntegrityError",
+            CommError::ConfigurationError(_) => "ConfigurationError",
+            CommError::AuthenticationFailed => "AuthenticationFailed",
+            CommError::NotConnected => "NotConnected",
+            CommError::RetryLimitExceeded => "RetryLimitExceeded",
+            CommError::SerializationError(_) => "SerializationError",
             _ => "Other",
         };
         
@@ -612,9 +637,7 @@ impl MockTransceiver {
 impl TransceiverInterface for MockTransceiver {
     fn read_message(&mut self) -> Result<Option<RawMessage>, CommError> {
         if !self.is_initialized {
-            return Err(CommError::ConnectionFailed {
-                details: "Transceiver not initialized".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Transceiver not initialized".to_string()));
         }
         
         // Simulate response delay
@@ -649,9 +672,7 @@ impl TransceiverInterface for MockTransceiver {
     
     fn transmit_message(&mut self, data: &[u8]) -> Result<(), CommError> {
         if !self.is_initialized {
-            return Err(CommError::ConnectionFailed {
-                details: "Transceiver not initialized".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Transceiver not initialized".to_string()));
         }
         
         // Validate message data
@@ -683,9 +704,7 @@ impl TransceiverInterface for MockTransceiver {
     
     fn set_transmission_power(&mut self, power_level: u8) -> Result<(), CommError> {
         if !self.is_initialized {
-            return Err(CommError::ConnectionFailed {
-                details: "Transceiver not initialized".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Transceiver not initialized".to_string()));
         }
         
         self.base.transmission_status.current_power_level = power_level;
@@ -710,17 +729,11 @@ impl TransceiverInterface for MockTransceiver {
     fn configure(&mut self, config: TransceiverConfig) -> Result<(), CommError> {
         // Validate configuration parameters
         if config.baud_rate == 0 {
-            return Err(CommError::ConfigurationError {
-                parameter: "baud_rate".to_string(),
-                details: "Baud rate cannot be zero".to_string(),
-            });
+            return Err(CommError::ConfigurationError("Baud rate cannot be zero".to_string()));
         }
         
         if config.buffer_size < 64 {
-            return Err(CommError::ConfigurationError {
-                parameter: "buffer_size".to_string(),
-                details: "Buffer size too small (minimum 64 bytes)".to_string(),
-            });
+            return Err(CommError::ConfigurationError("Buffer size too small (minimum 64 bytes)".to_string()));
         }
         
         self.base.config = config;
@@ -732,9 +745,7 @@ impl TransceiverInterface for MockTransceiver {
     
     fn send_command(&mut self, command: &[u8]) -> Result<Vec<u8>, CommError> {
         if !self.is_initialized {
-            return Err(CommError::ConnectionFailed {
-                details: "Transceiver not initialized".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Transceiver not initialized".to_string()));
         }
         
         // Simulate command processing delay
@@ -857,9 +868,7 @@ impl SerialTransceiver {
 impl TransceiverInterface for SerialTransceiver {
     fn read_message(&mut self) -> Result<Option<RawMessage>, CommError> {
         if !self.is_open {
-            return Err(CommError::ConnectionFailed {
-                details: "Serial port not open".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Serial port not open".to_string()));
         }
         
         // In a real implementation, this would read from actual serial port
@@ -869,9 +878,7 @@ impl TransceiverInterface for SerialTransceiver {
     
     fn transmit_message(&mut self, data: &[u8]) -> Result<(), CommError> {
         if !self.is_open {
-            return Err(CommError::ConnectionFailed {
-                details: "Serial port not open".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Serial port not open".to_string()));
         }
         
         // Validate message data
@@ -894,9 +901,7 @@ impl TransceiverInterface for SerialTransceiver {
     
     fn set_transmission_power(&mut self, power_level: u8) -> Result<(), CommError> {
         if !self.is_open {
-            return Err(CommError::ConnectionFailed {
-                details: "Serial port not open".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Serial port not open".to_string()));
         }
         
         self.base.transmission_status.current_power_level = power_level;
@@ -919,10 +924,7 @@ impl TransceiverInterface for SerialTransceiver {
     fn configure(&mut self, config: TransceiverConfig) -> Result<(), CommError> {
         // Validate serial-specific parameters
         if config.baud_rate < 1200 || config.baud_rate > 115200 {
-            return Err(CommError::ConfigurationError {
-                parameter: "baud_rate".to_string(),
-                details: "Baud rate must be between 1200 and 115200".to_string(),
-            });
+            return Err(CommError::ConfigurationError("Baud rate must be between 1200 and 115200".to_string()));
         }
         
         self.base.config = config;
@@ -938,9 +940,7 @@ impl TransceiverInterface for SerialTransceiver {
     
     fn send_command(&mut self, command: &[u8]) -> Result<Vec<u8>, CommError> {
         if !self.is_open {
-            return Err(CommError::ConnectionFailed {
-                details: "Serial port not open".to_string(),
-            });
+            return Err(CommError::ConnectionFailed("Serial port not open".to_string()));
         }
         
         // In a real implementation, this would send command to serial port
@@ -1242,7 +1242,7 @@ mod tests {
         // Record different types of errors
         stats.record_failed_transmission(CommError::Timeout { timeout_ms: 1000 });
         stats.record_failed_transmission(CommError::Timeout { timeout_ms: 2000 });
-        stats.record_failed_transmission(CommError::ConnectionFailed { details: "test".to_string() });
+        stats.record_failed_transmission(CommError::ConnectionFailed("test".to_string()));
         stats.record_failed_transmission(CommError::HardwareError { error_code: 1, details: "test".to_string() });
         
         assert_eq!(stats.error_count_by_type.get("Timeout"), Some(&2));

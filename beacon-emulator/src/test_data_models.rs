@@ -2,7 +2,7 @@
 mod tests {
     use uuid::Uuid;
     use std::time::{SystemTime, Duration};
-    use shared_positioning::config::GeodeticPosition;
+    use shared_positioning::GeodeticPosition;
     use crate::{
         MovementPattern, ScenarioType, ExportFormat,
         VirtualBeaconStats, VirtualMessage

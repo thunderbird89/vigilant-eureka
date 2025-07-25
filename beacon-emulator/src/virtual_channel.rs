@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use shared_positioning::config::GeodeticPosition;
+use shared_positioning::GeodeticPosition;
 use crate::EmulatorError;
 
 /// Virtual communication space that manages multiple channels
@@ -297,7 +297,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared_positioning::config::GeodeticPosition;
+    use shared_positioning::GeodeticPosition;
     use tokio::time::{sleep, Duration as TokioDuration};
 
     fn create_test_message(beacon_id: Uuid, timestamp: SystemTime) -> VirtualMessage {

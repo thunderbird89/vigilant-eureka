@@ -11,6 +11,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 shared-positioning = { path = "../shared-positioning" }
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["full", "signal"] }
+tokio-stream = "0.1"
 toml = "0.8"
 serde_yaml = "0.9"
 anyhow = "1.0"

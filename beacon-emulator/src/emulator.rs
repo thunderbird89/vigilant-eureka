@@ -3,7 +3,7 @@ use uuid::Uuid;
 use tokio::task::JoinHandle;
 use shared_positioning::{
     BeaconConfig,
-    config::GeodeticPosition,
+    GeodeticPosition,
 };
 use crate::{
     EmulatorError,
@@ -68,7 +68,7 @@ impl EmulatorManager {
     
     pub async fn stop_beacon(&mut self, id: Uuid) -> Result<(), EmulatorError> {
         if let Some(mut beacon) = self.virtual_beacons.remove(&id) {
-            beacon.stop();
+            let _ = beacon.stop();
             
             if let Some(task) = self.beacon_tasks.remove(&id) {
                 task.abort();
@@ -102,7 +102,7 @@ impl EmulatorManager {
         position: GeodeticPosition,
     ) -> Result<(), EmulatorError> {
         if let Some(beacon) = self.virtual_beacons.get_mut(&id) {
-            beacon.update_position(position);
+            let _ = beacon.update_position(position);
             Ok(())
         } else {
             Err(EmulatorError::BeaconNotFound(id))

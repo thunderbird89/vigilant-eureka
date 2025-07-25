@@ -26,7 +26,7 @@
   - Create subscription mechanism for virtual receivers to connect to channels
   - _Requirements: 3.1, 3.2, 3.3, 7.1, 7.2, 7.3, 7.4, 7.5_
 
-- [ ] 4. Implement virtual beacon core functionality
+- [x] 4. Implement virtual beacon core functionality
 
   - Create VirtualBeacon struct that uses shared-positioning library components
   - Implement beacon lifecycle management (start, stop, configuration updates)
@@ -35,7 +35,7 @@
   - Create beacon status reporting and statistics tracking
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 3.1, 3.4, 5.1, 5.2_
 
-- [ ] 5. Implement movement patterns and position updates
+- [-] 5. Implement movement patterns and position updates
 
   - Create movement pattern calculation functions for Linear, Circular, and Random movement
   - Implement position update logic that modifies beacon coordinates based on movement patterns

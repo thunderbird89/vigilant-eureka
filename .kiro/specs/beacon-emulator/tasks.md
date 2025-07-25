@@ -63,7 +63,7 @@
   - Handle negatives for numerical arguments
   - _Requirements: 1.1, 1.2, 6.1, 6.2, 6.3, 6.4, 6.5_
 
-- [ ] 8. Implement predefined test scenarios and beacon arrangements
+- [x] 8. Implement predefined test scenarios and beacon arrangements
 
   - Create scenario generation functions for Triangle, Square, Line, and Grid arrangements
   - Implement geometric calculations for beacon positioning based on center point and spacing

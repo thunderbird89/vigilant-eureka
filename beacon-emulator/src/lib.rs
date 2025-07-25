@@ -25,3 +25,7 @@ pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualMess
 pub use movement::{MovementPattern, MovementCoordinateTransformer, MovementPatternValidator};
 pub use scenario::ScenarioType;
 pub use export::ExportFormat;
+
+// Integration tests
+#[cfg(test)]
+mod scenario_integration_test;

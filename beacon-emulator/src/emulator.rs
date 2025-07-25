@@ -346,14 +346,76 @@ impl EmulatorManager {
     
     pub async fn create_scenario(
         &mut self,
-        _scenario_type: ScenarioType,
-        _count: usize,
-        _spacing: f64,
-        _center: GeodeticPosition,
+        scenario_type: ScenarioType,
+        count: usize,
+        spacing: f64,
+        center: GeodeticPosition,
     ) -> Result<Vec<Uuid>, EmulatorError> {
-        // TODO: Implement scenario generation
-        // This will be implemented in a later task
-        Err(EmulatorError::InvalidScenario("Scenario generation not yet implemented".to_string()))
+        use crate::scenario::{generate_scenario_positions, validate_scenario_parameters};
+        
+        // Validate scenario parameters
+        validate_scenario_parameters(&scenario_type, count, spacing)?;
+        
+        // Generate beacon positions
+        let positions = generate_scenario_positions(&scenario_type, count, spacing, &center)?;
+        
+        let mut beacon_ids = Vec::new();
+        
+        // Get virtual channel for beacons
+        let virtual_channel = self.communication_space.get_or_create_channel(&self.current_channel);
+        
+        // Create beacons at generated positions
+        for (index, position) in positions.into_iter().enumerate() {
+            // Generate a descriptive beacon ID based on scenario
+            let beacon_id = uuid::Uuid::new_v4();
+            
+            // Create default configuration for scenario beacons
+            let mut config = shared_positioning::BeaconConfig::new(beacon_id);
+            
+            // Configure transmission settings for scenario testing
+            config.transmission.interval_ms = 5000; // Default 5 second interval
+            config.transmission.message_version = shared_positioning::beacon_config::MessageVersion::V3;
+            config.transmission.power_level = 255; // Full power for testing
+            config.transmission.max_retries = 3;
+            config.transmission.retry_delay_ms = 1000;
+            
+            // Configure power settings for emulation (disable power saving features)
+            config.power.charging_enabled = false;
+            config.power.solar_charging_enabled = false;
+            config.power.power_modes.power_save_transmission_multiplier = 1.0; // No power saving
+            
+            // Create the virtual beacon
+            let virtual_beacon = VirtualBeacon::new(
+                beacon_id,
+                config,
+                position,
+                virtual_channel.clone(),
+            )?;
+            
+            // Add to registry
+            self.virtual_beacons.insert(beacon_id, virtual_beacon);
+            beacon_ids.push(beacon_id);
+            
+            tracing::info!(
+                "Created scenario beacon {} ({}/{}) at position {:.6}, {:.6}, {:.1}m for {} scenario",
+                beacon_id,
+                index + 1,
+                count,
+                position.latitude,
+                position.longitude,
+                position.depth,
+                scenario_type
+            );
+        }
+        
+        tracing::info!(
+            "Successfully created {} scenario with {} beacons (spacing: {:.1}m)",
+            scenario_type,
+            beacon_ids.len(),
+            spacing
+        );
+        
+        Ok(beacon_ids)
     }
     
     pub async fn export_logs(

@@ -17,7 +17,7 @@ pub mod test_data_models;
 
 // Re-export main types for convenience
 pub use error::EmulatorError;
-pub use emulator::EmulatorManager;
+pub use emulator::{EmulatorManager, EmulatorManagerStats};
 pub use virtual_beacon::{VirtualBeacon, VirtualBeaconStatus, VirtualBeaconStats};
 pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualMessage, VirtualChannelStats};
 pub use movement::{MovementPattern, MovementCoordinateTransformer, MovementPatternValidator};

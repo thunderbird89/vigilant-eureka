@@ -20,14 +20,14 @@ This manual provides comprehensive documentation for all command-line tools incl
 
 The beacon system includes several CLI tools for different aspects of system management:
 
-| Tool | Purpose | Primary Users |
-|------|---------|---------------|
-| `beacon` | Main beacon control and configuration | Operators, Developers |
-| `beacon-deploy` | Deployment and fleet management | Deployment Engineers |
-| `beacon-monitor` | System monitoring and alerting | Operations Teams |
-| `beacon-diagnostic` | System diagnostics and troubleshooting | Support Engineers |
-| `beacon-config` | Configuration management | System Administrators |
-| `beacon-test` | Testing and validation | QA Engineers, Developers |
+| Tool                | Purpose                                | Primary Users            |
+| ------------------- | -------------------------------------- | ------------------------ |
+| `beacon`            | Main beacon control and configuration  | Operators, Developers    |
+| `beacon-deploy`     | Deployment and fleet management        | Deployment Engineers     |
+| `beacon-monitor`    | System monitoring and alerting         | Operations Teams         |
+| `beacon-diagnostic` | System diagnostics and troubleshooting | Support Engineers        |
+| `beacon-config`     | Configuration management               | System Administrators    |
+| `beacon-test`       | Testing and validation                 | QA Engineers, Developers |
 
 ## Installation and Setup
 
@@ -115,6 +115,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Generate basic configuration
 beacon generate-config
@@ -143,6 +144,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Basic validation
 beacon validate-config
@@ -174,6 +176,7 @@ beacon config export [--format <FORMAT>] [--output <FILE>]
 ```
 
 **Examples:**
+
 ```bash
 # Show GPS configuration
 beacon config show --section gps
@@ -207,6 +210,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Basic status
 beacon status
@@ -237,6 +241,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Basic monitoring
 beacon monitor
@@ -272,6 +277,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Run all diagnostics
 beacon diagnostic --all
@@ -298,6 +304,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Basic performance analysis
 beacon performance --duration 600
@@ -327,6 +334,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Basic health check
 beacon health
@@ -357,6 +365,7 @@ beacon emergency-shutdown [--reason <REASON>]
 ```
 
 **Examples:**
+
 ```bash
 # Start beacon as daemon
 beacon start --daemon --pid-file /var/run/beacon.pid
@@ -402,6 +411,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Generate 10 beacon configurations
 beacon-deploy generate-configs --count 10
@@ -428,6 +438,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Validate deployment
 beacon-deploy validate-deployment --deployment my-deployment/
@@ -454,6 +465,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Test deployment with normal scenario
 beacon-deploy test-deployment --duration 1800
@@ -483,6 +495,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Create basic fleet
 beacon fleet create ocean_deployment --name "Ocean Deployment"
@@ -505,6 +518,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Add site with configuration file
 beacon fleet add-site ocean_deployment --site-config north-site.json
@@ -527,6 +541,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Add deployment to fleet
 beacon fleet add-beacons ocean_deployment --deployment north-deployment/
@@ -549,6 +564,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Show fleet summary
 beacon fleet status ocean_deployment
@@ -570,6 +586,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Monitor entire fleet
 beacon fleet monitor ocean_deployment --interval 600
@@ -593,6 +610,7 @@ Options:
 ```
 
 **Examples:**
+
 ```bash
 # Generate basic report
 beacon fleet report ocean_deployment --output fleet-report.json
@@ -894,12 +912,12 @@ beacon config update logging.forward_format "json"
 while true; do
     STATUS=$(beacon status --format json)
     HEALTH=$(echo $STATUS | jq '.system_health.overall_health_score')
-    
+
     if (( $(echo "$HEALTH < 0.8" | bc -l) )); then
         echo "Health degraded: $HEALTH"
         beacon diagnostic --all --output "diagnostic-$(date +%s).json"
     fi
-    
+
     sleep 300
 done
 ```
@@ -912,7 +930,7 @@ function beacon_api() {
     local endpoint=$1
     local method=${2:-GET}
     local data=$3
-    
+
     case $endpoint in
         "status")
             beacon status --format json

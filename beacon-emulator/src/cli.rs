@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 use std::path::PathBuf;
-use crate::{MovementPattern, ScenarioType, ExportFormat};
+use crate::{ScenarioType, ExportFormat};
 
 #[derive(Parser)]
 #[command(name = "beacon-emulator")]
@@ -52,9 +52,9 @@ pub enum EmulatorCommand {
         #[arg(long, default_value = "v3")]
         version: MessageVersion,
         
-        /// Movement pattern
+        /// Movement pattern (stationary, linear:speed:bearing, circular:radius:period, random:max_speed)
         #[arg(long, default_value = "stationary")]
-        movement: MovementPattern,
+        movement: String,
     },
     
     /// List active virtual beacons
@@ -86,9 +86,9 @@ pub enum EmulatorCommand {
         #[arg(long)]
         interval: Option<u32>,
         
-        /// Movement pattern
+        /// Movement pattern (stationary, linear:speed:bearing, circular:radius:period, random:max_speed)
         #[arg(long)]
-        movement: Option<MovementPattern>,
+        movement: Option<String>,
     },
     
     /// Create predefined test scenario

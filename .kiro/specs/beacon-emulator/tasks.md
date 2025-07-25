@@ -8,7 +8,7 @@
   - Configure logging and error handling infrastructure
   - _Requirements: 6.1, 6.2, 6.3_
 
-- [ ] 2. Implement core data models and error types
+- [x] 2. Implement core data models and error types
 
   - Create EmulatorError enum with comprehensive error variants for all failure modes
   - Implement MovementPattern enum with Stationary, Linear, Circular, and Random variants
@@ -17,7 +17,7 @@
   - Add serialization support for configuration persistence and log export
   - _Requirements: 1.1, 2.1, 4.1, 5.1_
 
-- [ ] 3. Implement virtual communication space and message broadcasting
+- [-] 3. Implement virtual communication space and message broadcasting
 
   - Create VirtualCommunicationSpace struct to manage multiple communication channels
   - Implement VirtualChannel with tokio broadcast for message distribution to virtual receivers

@@ -1,5 +1,6 @@
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use shared_positioning::{
     BeaconConfig,
     config::GeodeticPosition,
@@ -92,8 +93,12 @@ pub struct VirtualBeaconStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualBeaconStats {
     pub messages_sent: u64,
-    pub last_transmission: Option<std::time::SystemTime>,
-    pub uptime: std::time::Duration,
+    #[serde(
+        serialize_with = "serialize_optional_system_time",
+        deserialize_with = "deserialize_optional_system_time"
+    )]
+    pub last_transmission: Option<SystemTime>,
+    pub uptime: Duration,
     pub transmission_failures: u32,
 }
 
@@ -102,8 +107,42 @@ impl VirtualBeaconStats {
         Self {
             messages_sent: 0,
             last_transmission: None,
-            uptime: std::time::Duration::new(0, 0),
+            uptime: Duration::new(0, 0),
             transmission_failures: 0,
         }
+    }
+}
+
+// Custom serialization for SystemTime
+fn serialize_optional_system_time<S>(
+    time: &Option<SystemTime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match time {
+        Some(t) => {
+            let duration = t.duration_since(UNIX_EPOCH)
+                .map_err(serde::ser::Error::custom)?;
+            serializer.serialize_some(&duration.as_secs())
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_optional_system_time<'de, D>(
+    deserializer: D,
+) -> Result<Option<SystemTime>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt_secs: Option<u64> = Option::deserialize(deserializer)?;
+    match opt_secs {
+        Some(secs) => {
+            let time = UNIX_EPOCH + Duration::from_secs(secs);
+            Ok(Some(time))
+        }
+        None => Ok(None),
     }
 }

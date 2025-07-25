@@ -12,6 +12,9 @@ pub mod movement;
 pub mod scenario;
 pub mod export;
 
+#[cfg(test)]
+pub mod test_data_models;
+
 // Re-export main types for convenience
 pub use error::EmulatorError;
 pub use emulator::EmulatorManager;

@@ -1,8 +1,9 @@
 use tokio::sync::{broadcast, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use shared_positioning::config::GeodeticPosition;
 use crate::EmulatorError;
 
@@ -93,8 +94,35 @@ impl VirtualChannel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualMessage {
     pub beacon_id: Uuid,
+    #[serde(
+        serialize_with = "serialize_system_time",
+        deserialize_with = "deserialize_system_time"
+    )]
     pub timestamp: std::time::SystemTime,
     pub position: GeodeticPosition,
     pub message_data: Vec<u8>,
     pub signal_quality: u8,
+}
+
+// Custom serialization for SystemTime
+fn serialize_system_time<S>(
+    time: &SystemTime,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let duration = time.duration_since(UNIX_EPOCH)
+        .map_err(serde::ser::Error::custom)?;
+    serializer.serialize_u64(duration.as_secs())
+}
+
+fn deserialize_system_time<'de, D>(
+    deserializer: D,
+) -> Result<SystemTime, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let secs: u64 = u64::deserialize(deserializer)?;
+    Ok(UNIX_EPOCH + Duration::from_secs(secs))
 }

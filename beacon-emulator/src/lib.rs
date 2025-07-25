@@ -19,7 +19,7 @@ pub mod test_data_models;
 pub use error::EmulatorError;
 pub use emulator::EmulatorManager;
 pub use virtual_beacon::{VirtualBeacon, VirtualBeaconStatus, VirtualBeaconStats};
-pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualMessage};
+pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualMessage, VirtualChannelStats};
 pub use movement::MovementPattern;
 pub use scenario::ScenarioType;
 pub use export::ExportFormat;

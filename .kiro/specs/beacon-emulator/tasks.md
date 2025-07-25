@@ -53,13 +53,14 @@
   - Create beacon registry and task management for proper cleanup
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 6.1, 6.2_
 
-- [ ] 7. Implement CLI interface and command parsing
+- [x] 7. Implement CLI interface and command parsing
 
   - Create comprehensive CLI using clap with all required commands (create, list, stop, update, scenario, monitor, export)
   - Implement command validation and parameter parsing for beacon creation and management
   - Add support for loading beacon configurations from existing beacon config files
   - Implement interactive command processing with proper error reporting
   - Create help documentation and usage examples for all commands
+  - Handle negatives for numerical arguments
   - _Requirements: 1.1, 1.2, 6.1, 6.2, 6.3, 6.4, 6.5_
 
 - [ ] 8. Implement predefined test scenarios and beacon arrangements

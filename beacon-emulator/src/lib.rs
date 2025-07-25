@@ -20,6 +20,6 @@ pub use error::EmulatorError;
 pub use emulator::EmulatorManager;
 pub use virtual_beacon::{VirtualBeacon, VirtualBeaconStatus, VirtualBeaconStats};
 pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualMessage, VirtualChannelStats};
-pub use movement::MovementPattern;
+pub use movement::{MovementPattern, MovementCoordinateTransformer, MovementPatternValidator};
 pub use scenario::ScenarioType;
 pub use export::ExportFormat;

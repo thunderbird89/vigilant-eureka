@@ -7,3 +7,6 @@
 .DS_Store
 *.rs.bk
 *.pdb 
+
+# Data used for testing and emulation
+data/

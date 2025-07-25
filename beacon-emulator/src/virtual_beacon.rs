@@ -13,7 +13,8 @@ use crate::{
     EmulatorError, 
     VirtualChannel, 
     VirtualMessage,
-    MovementPattern
+    MovementPattern,
+    movement::{MovementCoordinateTransformer, MovementPatternValidator}
 };
 
 /// Control messages for beacon lifecycle management
@@ -156,8 +157,11 @@ impl VirtualBeacon {
         Ok(())
     }
     
-    /// Update beacon position
+    /// Update beacon position with validation
     pub fn update_position(&mut self, new_position: GeodeticPosition) -> Result<(), EmulatorError> {
+        // Validate the new position before setting it
+        MovementPatternValidator::validate_position(new_position)?;
+        
         self.position = new_position;
         
         if let Some(control_tx) = &self.control_tx {
@@ -168,8 +172,11 @@ impl VirtualBeacon {
         Ok(())
     }
     
-    /// Set movement pattern
+    /// Set movement pattern with validation
     pub fn set_movement_pattern(&mut self, pattern: MovementPattern) -> Result<(), EmulatorError> {
+        // Validate the movement pattern before setting it
+        MovementPatternValidator::validate_pattern(&pattern)?;
+        
         self.movement_pattern = pattern.clone();
         
         if let Some(control_tx) = &self.control_tx {
@@ -329,7 +336,7 @@ impl VirtualBeacon {
         Ok(())
     }
     
-    /// Update position based on movement pattern
+    /// Update position based on movement pattern using high-precision coordinate transformations
     fn update_position_from_movement(
         current_position: GeodeticPosition,
         initial_position: GeodeticPosition,
@@ -338,66 +345,64 @@ impl VirtualBeacon {
         transmission_interval_ms: u64,
         _message_count: u64,
     ) -> GeodeticPosition {
-        match movement_pattern {
-            MovementPattern::Stationary => current_position,
-            
-            MovementPattern::Linear { speed_m_per_s, bearing_deg } => {
-                let dt = transmission_interval_ms as f64 / 1000.0;
-                let distance = speed_m_per_s * dt;
-                
-                // Convert bearing to radians (0 degrees = north, clockwise)
-                let bearing_rad = (90.0 - bearing_deg).to_radians();
-                
-                // Calculate position offsets
-                let lat_offset = distance * bearing_rad.sin() / 111_132.0; // ~111,132 meters per degree latitude
-                let lon_offset = distance * bearing_rad.cos() / 
-                    (111_320.0 * current_position.latitude.to_radians().cos()); // Adjust for latitude
-                
-                GeodeticPosition {
-                    latitude: current_position.latitude + lat_offset,
-                    longitude: current_position.longitude + lon_offset,
-                    depth: current_position.depth,
-                }
-            }
-            
-            MovementPattern::Circular { radius_m, period_s } => {
-                let elapsed = SystemTime::now().duration_since(loop_start_time)
-                    .unwrap_or_default().as_secs_f64();
-                let angle = 2.0 * std::f64::consts::PI * elapsed / period_s;
-                
-                // Calculate offset from initial position
-                let lat_offset = radius_m * angle.cos() / 111_132.0;
-                let lon_offset = radius_m * angle.sin() / 
-                    (111_320.0 * initial_position.latitude.to_radians().cos());
-                
-                GeodeticPosition {
-                    latitude: initial_position.latitude + lat_offset,
-                    longitude: initial_position.longitude + lon_offset,
-                    depth: initial_position.depth,
-                }
-            }
-            
-            MovementPattern::Random { max_speed_m_per_s } => {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                
-                let dt = transmission_interval_ms as f64 / 1000.0;
-                let max_distance = max_speed_m_per_s * dt;
-                
-                let distance = rng.gen::<f64>() * max_distance;
-                let bearing = rng.gen::<f64>() * 2.0 * std::f64::consts::PI;
-                
-                let lat_offset = distance * bearing.cos() / 111_132.0;
-                let lon_offset = distance * bearing.sin() / 
-                    (111_320.0 * current_position.latitude.to_radians().cos());
-                
-                GeodeticPosition {
-                    latitude: current_position.latitude + lat_offset,
-                    longitude: current_position.longitude + lon_offset,
-                    depth: current_position.depth,
-                }
-            }
+        // Validate current position
+        if let Err(_) = MovementPatternValidator::validate_position(current_position) {
+            // If position is invalid, return current position without movement
+            return current_position;
         }
+        
+        let time_delta_s = transmission_interval_ms as f64 / 1000.0;
+        
+        // Validate time delta
+        if let Err(_) = MovementPatternValidator::validate_time_delta(time_delta_s) {
+            return current_position;
+        }
+        
+        // Create a thread-local coordinate transformer
+        thread_local! {
+            static TRANSFORMER: std::cell::RefCell<MovementCoordinateTransformer> = 
+                std::cell::RefCell::new(MovementCoordinateTransformer::new());
+        }
+        
+        let result = TRANSFORMER.with(|transformer| {
+            let mut transformer = transformer.borrow_mut();
+            
+            match movement_pattern {
+                MovementPattern::Stationary => Ok(current_position),
+                
+                MovementPattern::Linear { speed_m_per_s, bearing_deg } => {
+                    transformer.apply_linear_movement(
+                        current_position,
+                        *speed_m_per_s,
+                        *bearing_deg,
+                        time_delta_s,
+                    )
+                }
+                
+                MovementPattern::Circular { radius_m, period_s } => {
+                    let elapsed = SystemTime::now().duration_since(loop_start_time)
+                        .unwrap_or_default().as_secs_f64();
+                    
+                    transformer.apply_circular_movement(
+                        initial_position,
+                        *radius_m,
+                        *period_s,
+                        elapsed,
+                    )
+                }
+                
+                MovementPattern::Random { max_speed_m_per_s } => {
+                    transformer.apply_random_movement(
+                        current_position,
+                        *max_speed_m_per_s,
+                        time_delta_s,
+                    )
+                }
+            }
+        });
+        
+        // Return the new position or current position if there was an error
+        result.unwrap_or(current_position)
     }
 }
 

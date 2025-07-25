@@ -41,6 +41,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Shared positioning library
 shared-positioning = { path = "../shared-positioning" }
 
+# Linear algebra for coordinate transformations
+nalgebra = "0.33"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"

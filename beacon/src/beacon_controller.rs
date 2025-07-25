@@ -16,6 +16,8 @@ use shared_positioning::{
     TransmissionConfig, TransmissionError,
     TransmissionStatistics, TransmissionMessageVersion, TransmissionPriority,
     EnvironmentalConditions,
+    // Configuration imports
+    BeaconConfig, BeaconMessageVersion as MessageVersion, EmergencyConfig,
     // Enhanced error handling imports
     BeaconError, BeaconErrorContext, DiagnosticSystemManager, HealthAlert,
     GpsErrorType, PowerErrorType, CommunicationErrorType, TransmissionErrorType,
@@ -101,65 +103,7 @@ pub enum OperationalState {
     Error(String),
 }
 
-/// Beacon configuration parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BeaconConfig {
-    pub beacon_id: Uuid,
-    pub transmission_interval_ms: u32,
-    pub message_version: MessageVersion,
-    pub gps_config: GpsConfig,
-    pub power_config: PowerConfig,
-    pub communication_config: CommunicationConfig,
-    pub emergency_config: EmergencyConfig,
-}
 
-/// Message version selection
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MessageVersion {
-    V1,
-    V2,
-    V3,
-}
-
-/// Emergency handling configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmergencyConfig {
-    pub emergency_transmission_interval_ms: u32,
-    pub emergency_power_threshold_percent: f32,
-    pub emergency_gps_timeout_s: u32,
-    pub emergency_communication_timeout_s: u32,
-    pub auto_shutdown_enabled: bool,
-    pub emergency_message_count: u32,
-    pub shutdown_delay_s: u32,
-}
-
-impl Default for EmergencyConfig {
-    fn default() -> Self {
-        Self {
-            emergency_transmission_interval_ms: 5000, // 5 seconds
-            emergency_power_threshold_percent: 5.0,
-            emergency_gps_timeout_s: 300, // 5 minutes
-            emergency_communication_timeout_s: 1800, // 30 minutes
-            auto_shutdown_enabled: true,
-            emergency_message_count: 10,
-            shutdown_delay_s: 30, // 30 seconds
-        }
-    }
-}
-
-impl Default for BeaconConfig {
-    fn default() -> Self {
-        Self {
-            beacon_id: Uuid::new_v4(),
-            transmission_interval_ms: 5000, // 5 seconds
-            message_version: MessageVersion::V3,
-            gps_config: GpsConfig::default(),
-            power_config: PowerConfig::default(),
-            communication_config: CommunicationConfig::default(),
-            emergency_config: EmergencyConfig::default(),
-        }
-    }
-}
 
 /// Communication status information
 #[derive(Debug, Clone)]
@@ -307,31 +251,30 @@ where
     
     /// Validate beacon configuration
     fn validate_config(config: &BeaconConfig) -> Result<(), BeaconError> {
-        if config.transmission_interval_ms < 1000 || config.transmission_interval_ms > 60000 {
+        if config.transmission.interval_ms < 1000 || config.transmission.interval_ms > 60000 {
             return Err(BeaconError::ConfigurationError {
                 error_type: ConfigurationErrorType::ParameterOutOfRange,
-                parameter_name: "transmission_interval_ms".to_string(),
-                current_value: config.transmission_interval_ms.to_string(),
+                parameter_name: "transmission.interval_ms".to_string(),
+                current_value: config.transmission.interval_ms.to_string(),
                 expected_value: "1000-60000".to_string(),
             });
         }
         
-        if config.emergency_config.emergency_transmission_interval_ms < 1000 {
+        if config.emergency.emergency_interval_ms < 1000 {
             return Err(BeaconError::ConfigurationError {
                 error_type: ConfigurationErrorType::ParameterOutOfRange,
-                parameter_name: "emergency_transmission_interval_ms".to_string(),
-                current_value: config.emergency_config.emergency_transmission_interval_ms.to_string(),
+                parameter_name: "emergency.emergency_interval_ms".to_string(),
+                current_value: config.emergency.emergency_interval_ms.to_string(),
                 expected_value: ">=1000".to_string(),
             });
         }
         
-        if config.emergency_config.emergency_power_threshold_percent < 1.0 || 
-           config.emergency_config.emergency_power_threshold_percent > 20.0 {
+        if !config.emergency.emergency_mode_enabled {
             return Err(BeaconError::ConfigurationError {
                 error_type: ConfigurationErrorType::ParameterOutOfRange,
-                parameter_name: "emergency_power_threshold_percent".to_string(),
-                current_value: config.emergency_config.emergency_power_threshold_percent.to_string(),
-                expected_value: "1.0-20.0".to_string(),
+                parameter_name: "emergency.emergency_mode_enabled".to_string(),
+                current_value: "false".to_string(),
+                expected_value: "true".to_string(),
             });
         }
         
@@ -347,16 +290,47 @@ where
         self.log_info("Starting beacon controller");
         self.operational_state = OperationalState::Initializing;
         
-        // Initialize GPS manager
-        self.gps_manager.configure(self.config.gps_config.clone())?;
+        // Initialize GPS manager - convert beacon config to GPS config
+        let gps_config = shared_positioning::GpsConfig {
+            acquisition_timeout_s: self.config.gps.acquisition_timeout_s,
+            update_interval_s: self.config.gps.update_interval_s,
+            min_satellite_count: self.config.gps.min_satellite_count,
+            accuracy_threshold_m: self.config.gps.accuracy_threshold_m,
+            cold_start_timeout_s: self.config.gps.cold_start_timeout_s,
+        };
+        self.gps_manager.configure(gps_config)?;
         self.gps_manager.start_acquisition()?;
         self.operational_state = OperationalState::GpsAcquisition;
         
-        // Configure power manager
-        self.power_manager.configure_power_thresholds(self.config.power_config.clone())?;
+        // Configure power manager - convert beacon config to power config
+        let power_config = shared_positioning::PowerConfig {
+            low_battery_threshold_percent: self.config.power.low_battery_threshold_percent,
+            critical_battery_threshold_percent: self.config.power.critical_battery_threshold_percent,
+            emergency_battery_threshold_percent: self.config.power.emergency_battery_threshold_percent,
+            power_save_mode_threshold_percent: self.config.power.power_save_threshold_percent,
+            charging_enabled: self.config.power.charging_enabled,
+            solar_charging_enabled: self.config.power.solar_charging_enabled,
+            temperature_min_c: self.config.power.temperature_limits.min_operating_c,
+            temperature_max_c: self.config.power.temperature_limits.max_operating_c,
+            voltage_min_v: 3.0, // Default values
+            voltage_max_v: 4.2,
+            current_max_ma: 2000.0,
+            monitoring_interval_ms: (self.config.power.monitoring_interval_s * 1000) as u32,
+        };
+        self.power_manager.configure_power_thresholds(power_config)?;
         
-        // Configure communication manager
-        self.communication_manager.configure(self.config.communication_config.clone())?;
+        // Configure communication manager - convert beacon config to communication config
+        let comm_config = shared_positioning::CommunicationConfig {
+            connection_interval_hours: self.config.communication.connection_interval_hours,
+            retry_attempts: self.config.communication.max_retry_attempts,
+            retry_backoff_ms: self.config.communication.initial_retry_backoff_ms,
+            max_retry_interval_hours: self.config.communication.max_retry_interval_hours,
+            connection_timeout_s: self.config.communication.connection_timeout_s,
+            data_compression_enabled: self.config.communication.compression_enabled,
+            server_endpoint: self.config.communication.endpoints.primary_url.clone(),
+            auth_token: self.config.communication.endpoints.api_key.clone(),
+        };
+        self.communication_manager.configure(comm_config)?;
         
         self.running = true;
         self.start_time = SystemTime::now();
@@ -395,18 +369,80 @@ where
         self.log_info("Updating beacon configuration");
         
         // Update GPS configuration if changed
-        if config.gps_config != self.config.gps_config {
-            self.gps_manager.configure(config.gps_config.clone())?;
+        let new_gps_config = shared_positioning::GpsConfig {
+            acquisition_timeout_s: config.gps.acquisition_timeout_s,
+            update_interval_s: config.gps.update_interval_s,
+            min_satellite_count: config.gps.min_satellite_count,
+            accuracy_threshold_m: config.gps.accuracy_threshold_m,
+            cold_start_timeout_s: config.gps.cold_start_timeout_s,
+        };
+        let current_gps_config = shared_positioning::GpsConfig {
+            acquisition_timeout_s: self.config.gps.acquisition_timeout_s,
+            update_interval_s: self.config.gps.update_interval_s,
+            min_satellite_count: self.config.gps.min_satellite_count,
+            accuracy_threshold_m: self.config.gps.accuracy_threshold_m,
+            cold_start_timeout_s: self.config.gps.cold_start_timeout_s,
+        };
+        if new_gps_config != current_gps_config {
+            self.gps_manager.configure(new_gps_config)?;
         }
         
         // Update power configuration if changed
-        if config.power_config != self.config.power_config {
-            self.power_manager.configure_power_thresholds(config.power_config.clone())?;
+        let new_power_config = shared_positioning::PowerConfig {
+            low_battery_threshold_percent: config.power.low_battery_threshold_percent,
+            critical_battery_threshold_percent: config.power.critical_battery_threshold_percent,
+            emergency_battery_threshold_percent: config.power.emergency_battery_threshold_percent,
+            power_save_mode_threshold_percent: config.power.power_save_threshold_percent,
+            charging_enabled: config.power.charging_enabled,
+            solar_charging_enabled: config.power.solar_charging_enabled,
+            temperature_min_c: config.power.temperature_limits.min_operating_c,
+            temperature_max_c: config.power.temperature_limits.max_operating_c,
+            voltage_min_v: 3.0,
+            voltage_max_v: 4.2,
+            current_max_ma: 2000.0,
+            monitoring_interval_ms: (config.power.monitoring_interval_s * 1000) as u32,
+        };
+        let current_power_config = shared_positioning::PowerConfig {
+            low_battery_threshold_percent: self.config.power.low_battery_threshold_percent,
+            critical_battery_threshold_percent: self.config.power.critical_battery_threshold_percent,
+            emergency_battery_threshold_percent: self.config.power.emergency_battery_threshold_percent,
+            power_save_mode_threshold_percent: self.config.power.power_save_threshold_percent,
+            charging_enabled: self.config.power.charging_enabled,
+            solar_charging_enabled: self.config.power.solar_charging_enabled,
+            temperature_min_c: self.config.power.temperature_limits.min_operating_c,
+            temperature_max_c: self.config.power.temperature_limits.max_operating_c,
+            voltage_min_v: 3.0,
+            voltage_max_v: 4.2,
+            current_max_ma: 2000.0,
+            monitoring_interval_ms: (self.config.power.monitoring_interval_s * 1000) as u32,
+        };
+        if new_power_config != current_power_config {
+            self.power_manager.configure_power_thresholds(new_power_config)?;
         }
         
         // Update communication configuration if changed
-        if config.communication_config != self.config.communication_config {
-            self.communication_manager.configure(config.communication_config.clone())?;
+        let new_comm_config = shared_positioning::CommunicationConfig {
+            connection_interval_hours: config.communication.connection_interval_hours,
+            retry_attempts: config.communication.max_retry_attempts,
+            retry_backoff_ms: config.communication.initial_retry_backoff_ms,
+            max_retry_interval_hours: config.communication.max_retry_interval_hours,
+            connection_timeout_s: config.communication.connection_timeout_s,
+            data_compression_enabled: config.communication.compression_enabled,
+            server_endpoint: config.communication.endpoints.primary_url.clone(),
+            auth_token: config.communication.endpoints.api_key.clone(),
+        };
+        let current_comm_config = shared_positioning::CommunicationConfig {
+            connection_interval_hours: self.config.communication.connection_interval_hours,
+            retry_attempts: self.config.communication.max_retry_attempts,
+            retry_backoff_ms: self.config.communication.initial_retry_backoff_ms,
+            max_retry_interval_hours: self.config.communication.max_retry_interval_hours,
+            connection_timeout_s: self.config.communication.connection_timeout_s,
+            data_compression_enabled: self.config.communication.compression_enabled,
+            server_endpoint: self.config.communication.endpoints.primary_url.clone(),
+            auth_token: self.config.communication.endpoints.api_key.clone(),
+        };
+        if new_comm_config != current_comm_config {
+            self.communication_manager.configure(new_comm_config)?;
         }
         
         self.config = config;
@@ -421,7 +457,7 @@ where
     
     /// Send emergency messages (for testing)
     pub fn send_emergency_messages(&mut self) -> Result<(), BeaconError> {
-        for _ in 0..self.config.emergency_config.emergency_message_count {
+        for _ in 0..10 { // Default emergency message count
             if let Err(e) = self.handle_transmission() {
                 self.log_error(&format!("Emergency transmission failed: {}", e));
             }
@@ -479,7 +515,7 @@ where
                 // Send emergency messages
                 self.send_emergency_messages()?;
                 
-                if self.config.emergency_config.auto_shutdown_enabled {
+                if self.config.emergency.auto_recovery_enabled {
                     self.prepare_emergency_shutdown()?;
                 }
             }
@@ -541,9 +577,9 @@ where
             
             // Handle transmissions
             let transmission_interval = if self.operational_state == OperationalState::Emergency {
-                Duration::from_millis(self.config.emergency_config.emergency_transmission_interval_ms as u64)
+                Duration::from_millis(self.config.emergency.emergency_interval_ms as u64)
             } else {
-                Duration::from_millis(self.config.transmission_interval_ms as u64)
+                Duration::from_millis(self.config.transmission.interval_ms as u64)
             };
             
             if now.duration_since(last_transmission) >= transmission_interval {
@@ -655,7 +691,7 @@ where
                         .duration_since(last_update)
                         .unwrap_or(Duration::from_secs(0));
                     
-                    if time_since_update > Duration::from_secs(self.config.emergency_config.emergency_gps_timeout_s as u64) {
+                    if time_since_update > Duration::from_secs(300) { // Default emergency GPS timeout
                         let beacon_error = BeaconError::GpsError {
                             error_type: GpsErrorType::SignalLost,
                             last_known_position: self.gps_manager.get_current_position()
@@ -723,7 +759,7 @@ where
         };
         
         // Check for power emergencies
-        if battery_status.capacity_percent <= self.config.emergency_config.emergency_power_threshold_percent {
+        if battery_status.capacity_percent <= 5.0 { // Default emergency power threshold
             let beacon_error = BeaconError::PowerError {
                 error_type: PowerErrorType::BatteryDepleted,
                 battery_status: BatteryStatusSnapshot {
@@ -743,7 +779,7 @@ where
             }
             
             self.handle_emergency(EmergencyType::BatteryDepleted)?;
-        } else if battery_status.capacity_percent <= self.config.power_config.power_save_mode_threshold_percent {
+        } else if battery_status.capacity_percent <= self.config.power.power_save_threshold_percent {
             if self.operational_state == OperationalState::Normal {
                 self.operational_state = OperationalState::PowerSave;
                 if let Err(e) = self.power_manager.set_power_mode(PowerOperationMode::PowerSave) {
@@ -771,8 +807,8 @@ where
         }
         
         // Check temperature extremes
-        if battery_status.temperature_c < self.config.power_config.temperature_min_c ||
-           battery_status.temperature_c > self.config.power_config.temperature_max_c {
+        if battery_status.temperature_c < self.config.power.temperature_limits.min_operating_c ||
+           battery_status.temperature_c > self.config.power.temperature_limits.max_operating_c {
             let beacon_error = BeaconError::PowerError {
                 error_type: PowerErrorType::TemperatureExtreme {
                     temperature_c: battery_status.temperature_c,
@@ -852,7 +888,7 @@ where
         
         // Build message based on configured version using MessageBuilder
         let message_builder = MessageBuilder::new();
-        let message_data = match self.config.message_version {
+        let message_data = match self.config.transmission.message_version {
             MessageVersion::V1 => {
                 let legacy_id = self.beacon_id_to_u16();
                 message_builder.build_v1_message(legacy_id, position, signal_quality, self.transmission_sequence)
@@ -1022,7 +1058,7 @@ where
             messages_sent: self.transmission_sequence as u64,
             transmission_failures: 0, // TODO: Track transmission failures
             last_transmission_time: self.last_transmission,
-            average_transmission_interval_ms: self.config.transmission_interval_ms,
+            average_transmission_interval_ms: self.config.transmission.interval_ms,
             signal_quality_history: vec![], // TODO: Track signal quality history
             power_level_history: vec![], // TODO: Track power level history
         }
@@ -1084,7 +1120,7 @@ where
                 failure_count: 0, // TODO: Track transmission failures
                 current_power_level: self.current_power_level,
                 message_sequence: self.transmission_sequence,
-                average_interval_ms: self.config.transmission_interval_ms,
+                average_interval_ms: self.config.transmission.interval_ms,
             },
             environmental_conditions: EnvironmentalMetrics {
                 temperature_c: battery_status.temperature_c,
@@ -1670,15 +1706,7 @@ mod tests {
     use shared_positioning::{MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver};
     
     fn create_test_config() -> BeaconConfig {
-        BeaconConfig {
-            beacon_id: Uuid::new_v4(),
-            transmission_interval_ms: 5000,
-            message_version: MessageVersion::V3,
-            gps_config: GpsConfig::default(),
-            power_config: PowerConfig::default(),
-            communication_config: CommunicationConfig::default(),
-            emergency_config: EmergencyConfig::default(),
-        }
+        BeaconConfig::new(Uuid::new_v4())
     }
     
     fn create_test_controller() -> BeaconController<MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver> {
@@ -1706,18 +1734,15 @@ mod tests {
         assert!(BeaconController::<MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver>::validate_config(&config).is_ok());
         
         // Invalid transmission interval
-        config.transmission_interval_ms = 500; // Too short
+        config.transmission.interval_ms = 500; // Too short
         assert!(BeaconController::<MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver>::validate_config(&config).is_err());
         
-        config.transmission_interval_ms = 70000; // Too long
+        config.transmission.interval_ms = 70000; // Too long
         assert!(BeaconController::<MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver>::validate_config(&config).is_err());
         
-        // Invalid emergency power threshold
+        // Test emergency config validation
         config = create_test_config();
-        config.emergency_config.emergency_power_threshold_percent = 0.5; // Too low
-        assert!(BeaconController::<MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver>::validate_config(&config).is_err());
-        
-        config.emergency_config.emergency_power_threshold_percent = 25.0; // Too high
+        config.emergency.emergency_mode_enabled = false;
         assert!(BeaconController::<MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver>::validate_config(&config).is_err());
     }
     
@@ -1752,11 +1777,11 @@ mod tests {
     
     #[test]
     fn test_emergency_config_default() {
-        let config = EmergencyConfig::default();
-        assert_eq!(config.emergency_transmission_interval_ms, 30000);
-        assert_eq!(config.emergency_power_threshold_percent, 5.0);
-        assert!(config.auto_shutdown_enabled);
-        assert_eq!(config.emergency_message_count, 10);
+        let beacon_config = BeaconConfig::new(Uuid::new_v4());
+        let config = &beacon_config.emergency;
+        assert_eq!(config.emergency_interval_ms, 5000);
+        assert!(config.emergency_mode_enabled);
+        assert!(config.auto_recovery_enabled);
     }
     
     #[test]

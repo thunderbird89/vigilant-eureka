@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::{info, warn};
 
-use crate::beacon_controller::BeaconConfig;
+use shared_positioning::BeaconConfig;
 
 pub struct ConfigManager {
     config_path: PathBuf,
@@ -101,36 +101,36 @@ pub fn validate_config(config: &BeaconConfig) -> Result<()> {
     }
     
     // Validate transmission interval
-    if config.transmission_interval_ms < 1000 {
+    if config.transmission.interval_ms < 1000 {
         return Err(anyhow::anyhow!(
             "Transmission interval too short: {}ms (minimum: 1000ms)",
-            config.transmission_interval_ms
+            config.transmission.interval_ms
         ));
     }
     
-    if config.transmission_interval_ms > 60000 {
+    if config.transmission.interval_ms > 60000 {
         return Err(anyhow::anyhow!(
             "Transmission interval too long: {}ms (maximum: 60000ms)",
-            config.transmission_interval_ms
+            config.transmission.interval_ms
         ));
     }
     
     // Validate GPS configuration
-    validate_gps_config(&config.gps_config)?;
+    validate_gps_config(&config.gps)?;
     
     // Validate power configuration
-    validate_power_config(&config.power_config)?;
+    validate_power_config(&config.power)?;
     
     // Validate communication configuration
-    validate_communication_config(&config.communication_config)?;
+    validate_communication_config(&config.communication)?;
     
     // Validate emergency configuration
-    validate_emergency_config(&config.emergency_config)?;
+    validate_emergency_config(&config.emergency)?;
     
     Ok(())
 }
 
-fn validate_gps_config(config: &shared_positioning::GpsConfig) -> Result<()> {
+fn validate_gps_config(config: &shared_positioning::BeaconGpsConfig) -> Result<()> {
     if config.acquisition_timeout_s < 10 {
         return Err(anyhow::anyhow!(
             "GPS acquisition timeout too short: {}s (minimum: 10s)",
@@ -169,7 +169,7 @@ fn validate_gps_config(config: &shared_positioning::GpsConfig) -> Result<()> {
     Ok(())
 }
 
-fn validate_power_config(config: &shared_positioning::PowerConfig) -> Result<()> {
+fn validate_power_config(config: &shared_positioning::BeaconPowerConfig) -> Result<()> {
     if config.low_battery_threshold_percent <= config.critical_battery_threshold_percent {
         return Err(anyhow::anyhow!(
             "Low battery threshold ({:.1}%) must be higher than critical threshold ({:.1}%)",
@@ -203,7 +203,7 @@ fn validate_power_config(config: &shared_positioning::PowerConfig) -> Result<()>
     Ok(())
 }
 
-fn validate_communication_config(config: &shared_positioning::CommunicationConfig) -> Result<()> {
+fn validate_communication_config(config: &shared_positioning::BeaconCommunicationConfig) -> Result<()> {
     if config.connection_interval_hours < 1 {
         return Err(anyhow::anyhow!(
             "Connection interval too short: {}h (minimum: 1h)",
@@ -218,10 +218,10 @@ fn validate_communication_config(config: &shared_positioning::CommunicationConfi
         ));
     }
     
-    if config.retry_attempts > 10 {
+    if config.max_retry_attempts > 10 {
         return Err(anyhow::anyhow!(
             "Too many retry attempts: {} (maximum: 10)",
-            config.retry_attempts
+            config.max_retry_attempts
         ));
     }
     
@@ -242,32 +242,32 @@ fn validate_communication_config(config: &shared_positioning::CommunicationConfi
     Ok(())
 }
 
-fn validate_emergency_config(config: &crate::beacon_controller::EmergencyConfig) -> Result<()> {
-    if config.emergency_transmission_interval_ms < 500 {
+fn validate_emergency_config(config: &shared_positioning::EmergencyConfig) -> Result<()> {
+    if config.emergency_interval_ms < 500 {
         return Err(anyhow::anyhow!(
             "Emergency transmission interval too short: {}ms (minimum: 500ms)",
-            config.emergency_transmission_interval_ms
+            config.emergency_interval_ms
         ));
     }
     
-    if config.emergency_transmission_interval_ms > 10000 {
+    if config.emergency_interval_ms > 10000 {
         return Err(anyhow::anyhow!(
             "Emergency transmission interval too long: {}ms (maximum: 10000ms)",
-            config.emergency_transmission_interval_ms
+            config.emergency_interval_ms
         ));
     }
     
-    if config.shutdown_delay_s < 5 {
+    if config.shutdown_conditions.shutdown_grace_period_s < 5 {
         return Err(anyhow::anyhow!(
             "Shutdown delay too short: {}s (minimum: 5s)",
-            config.shutdown_delay_s
+            config.shutdown_conditions.shutdown_grace_period_s
         ));
     }
     
-    if config.shutdown_delay_s > 300 {
+    if config.shutdown_conditions.shutdown_grace_period_s > 300 {
         return Err(anyhow::anyhow!(
             "Shutdown delay too long: {}s (maximum: 300s)",
-            config.shutdown_delay_s
+            config.shutdown_conditions.shutdown_grace_period_s
         ));
     }
     

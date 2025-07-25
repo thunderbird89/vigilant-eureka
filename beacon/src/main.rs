@@ -1,12 +1,10 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::signal;
-use tracing::{error, info, warn};
-use uuid::Uuid;
+use tracing::{error, info};
 
 mod beacon_controller;
 mod cli;
@@ -14,7 +12,9 @@ mod config;
 mod deployment;
 mod signal_handler;
 
-use beacon_controller::{BeaconController, BeaconConfig, MessageVersion, EmergencyConfig};
+use beacon_controller::BeaconController;
+use shared_positioning::BeaconConfig;
+use config::ConfigManager;
 
 // Type alias for the concrete beacon controller type
 type ConcreteBeaconController = BeaconController<
@@ -23,12 +23,10 @@ type ConcreteBeaconController = BeaconController<
     shared_positioning::MockCommunicationManager,
     shared_positioning::MockTransceiver,
 >;
-use cli::{CliCommands, StatusCommand, DiagnosticCommand};
-use config::{ConfigManager, validate_config};
+use cli::CliCommands;
 use signal_handler::SignalHandler;
 use shared_positioning::{
     MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver,
-    GpsConfig, PowerConfig, CommunicationConfig,
 };
 
 #[derive(Parser)]
@@ -120,21 +118,20 @@ async fn handle_cli_command(command: CliCommands, config_path: &PathBuf) -> Resu
 async fn validate_config_file(config_path: &PathBuf) -> Result<()> {
     info!("Validating configuration file: {}", config_path.display());
     
-    let config_manager = ConfigManager::new(config_path.clone());
-    let config = config_manager.load_config().await
-        .context("Failed to load configuration")?;
+    let config = BeaconConfig::load_from_file(config_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
     
-    match validate_config(&config) {
+    match config.validate() {
         Ok(()) => {
             println!("✓ Configuration is valid");
             println!("  Beacon ID: {}", config.beacon_id);
-            println!("  Transmission interval: {}ms", config.transmission_interval_ms);
-            println!("  Message version: {:?}", config.message_version);
+            println!("  Transmission interval: {}ms", config.transmission.interval_ms);
+            println!("  Message version: {:?}", config.transmission.message_version);
             Ok(())
         }
         Err(e) => {
             println!("✗ Configuration validation failed: {}", e);
-            Err(e)
+            Err(anyhow::anyhow!("Configuration validation failed: {}", e))
         }
     }
 }
@@ -142,19 +139,11 @@ async fn validate_config_file(config_path: &PathBuf) -> Result<()> {
 async fn generate_default_config(output_path: &PathBuf) -> Result<()> {
     info!("Generating default configuration: {}", output_path.display());
     
-    let default_config = BeaconConfig {
-        beacon_id: Uuid::new_v4(),
-        transmission_interval_ms: 5000,
-        message_version: MessageVersion::V3,
-        gps_config: GpsConfig::default(),
-        power_config: PowerConfig::default(),
-        communication_config: CommunicationConfig::default(),
-        emergency_config: EmergencyConfig::default(),
-    };
+    let beacon_id = uuid::Uuid::new_v4();
+    let mut default_config = BeaconConfig::new(beacon_id);
     
-    let config_manager = ConfigManager::new(output_path.clone());
-    config_manager.save_config(&default_config).await
-        .context("Failed to save default configuration")?;
+    default_config.save_to_file(output_path)
+        .map_err(|e| anyhow::anyhow!("Failed to save default configuration: {}", e))?;
     
     println!("✓ Default configuration generated: {}", output_path.display());
     println!("  Beacon ID: {}", default_config.beacon_id);
@@ -166,13 +155,12 @@ async fn run_beacon_service(config_path: &PathBuf) -> Result<()> {
     info!("Starting beacon service with config: {}", config_path.display());
     
     // Load configuration
-    let config_manager = ConfigManager::new(config_path.clone());
-    let config = config_manager.load_config().await
-        .context("Failed to load configuration")?;
+    let config = BeaconConfig::load_from_file(config_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
     
     // Validate configuration
-    validate_config(&config)
-        .context("Configuration validation failed")?;
+    config.validate()
+        .map_err(|e| anyhow::anyhow!("Configuration validation failed: {}", e))?;
     
     info!("Configuration loaded and validated successfully");
     info!("Beacon ID: {}", config.beacon_id);
@@ -182,6 +170,9 @@ async fn run_beacon_service(config_path: &PathBuf) -> Result<()> {
         .context("Failed to create beacon controller")?;
     
     let beacon_controller: Arc<RwLock<ConcreteBeaconController>> = Arc::new(RwLock::new(beacon_controller));
+    
+    // Create config manager
+    let config_manager = ConfigManager::new(config_path.clone());
     
     // Set up signal handling
     let signal_handler = SignalHandler::new(
@@ -227,7 +218,14 @@ async fn run_beacon_service(config_path: &PathBuf) -> Result<()> {
 async fn create_beacon_controller(config: BeaconConfig) -> Result<ConcreteBeaconController> {
     // Create mock managers for demonstration
     // In a real implementation, these would be actual hardware interfaces
-    let gps_manager = MockGpsManager::with_test_positions(config.gps_config.clone())
+    let gps_config = shared_positioning::GpsConfig {
+        acquisition_timeout_s: config.gps.acquisition_timeout_s,
+        update_interval_s: config.gps.update_interval_s,
+        min_satellite_count: config.gps.min_satellite_count,
+        accuracy_threshold_m: config.gps.accuracy_threshold_m,
+        cold_start_timeout_s: config.gps.cold_start_timeout_s,
+    };
+    let gps_manager = MockGpsManager::with_test_positions(gps_config)
         .context("Failed to create GPS manager")?;
     
     let power_manager = MockPowerManager::new();

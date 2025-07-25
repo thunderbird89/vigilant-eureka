@@ -1275,11 +1275,18 @@ impl WatchdogConfig {
 impl BeaconConfig {
     /// Load configuration from file with validation
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(&path)
-            .map_err(|e| ConfigError::IoError(format!("Failed to read config file '{}': {}", path.as_ref().display(), e)))?;
+        let path_ref = path.as_ref();
+        let content = fs::read_to_string(&path_ref)
+            .map_err(|e| ConfigError::IoError(format!("Failed to read config file '{}': {}", path_ref.display(), e)))?;
         
-        let mut config: BeaconConfig = serde_json::from_str(&content)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to parse config JSON: {}", e)))?;
+        // Determine format based on file extension
+        let format = match path_ref.extension().and_then(|s| s.to_str()) {
+            Some("toml") => ConfigExportFormat::Toml,
+            Some("yaml") | Some("yml") => ConfigExportFormat::Yaml,
+            Some("json") | _ => ConfigExportFormat::Json, // Default to JSON
+        };
+        
+        let mut config = Self::import_from_format(&content, format)?;
         
         // Validate loaded configuration
         config.validate()?;
@@ -1314,13 +1321,19 @@ impl BeaconConfig {
             }
         }
 
-        // Serialize configuration
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| ConfigError::SerializationError(format!("Failed to serialize config: {}", e)))?;
+        // Determine format based on file extension
+        let format = match path_ref.extension().and_then(|s| s.to_str()) {
+            Some("toml") => ConfigExportFormat::Toml,
+            Some("yaml") | Some("yml") => ConfigExportFormat::Yaml,
+            Some("json") | _ => ConfigExportFormat::Json, // Default to JSON
+        };
+
+        // Serialize configuration in the appropriate format
+        let content = self.export_to_format(format)?;
         
         // Write to temporary file first, then rename for atomic operation
         let temp_path = path_ref.with_extension("tmp");
-        fs::write(&temp_path, json)
+        fs::write(&temp_path, content)
             .map_err(|e| ConfigError::IoError(format!("Failed to write temp config file: {}", e)))?;
 
         // Atomic rename

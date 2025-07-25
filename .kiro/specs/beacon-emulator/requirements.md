@@ -94,6 +94,19 @@ The emulator integrates with the existing shared positioning library and mimics 
 
 ### Requirement 8
 
+**User Story:** As a developer, I want to run virtual receivers that can connect to the emulator's virtual communication space, so that I can test the complete positioning system including receiver functionality without physical hardware.
+
+#### Acceptance Criteria
+
+1. WHEN starting the receiver program THEN it SHALL accept a command-line parameter to specify the virtual communication channel name to connect to
+2. WHEN a virtual receiver connects to a virtual channel THEN it SHALL receive all beacon transmissions from virtual beacons broadcasting on that channel
+3. WHEN virtual receivers process messages THEN they SHALL handle virtual beacon messages identically to real beacon messages for positioning calculations
+4. WHEN multiple virtual receivers connect to the same channel THEN they SHALL all receive the same beacon transmissions simultaneously
+5. WHEN virtual receivers connect to different communication channels THEN they SHALL NOT receive messages from beacons on other channels (channel isolation)
+6. WHEN testing positioning algorithms THEN virtual receivers SHALL be able to perform trilateration and positioning calculations using virtual beacon data
+
+### Requirement 9
+
 **User Story:** As a performance tester, I want to simulate high-load scenarios with many virtual beacons, so that I can test system scalability and resource usage.
 
 #### Acceptance Criteria

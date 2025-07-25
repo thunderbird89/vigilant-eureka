@@ -419,6 +419,23 @@ where
         &self.config
     }
     
+    /// Send emergency messages (for testing)
+    pub fn send_emergency_messages(&mut self) -> Result<(), BeaconError> {
+        for _ in 0..self.config.emergency_config.emergency_message_count {
+            if let Err(e) = self.handle_transmission() {
+                self.log_error(&format!("Emergency transmission failed: {}", e));
+            }
+        }
+        Ok(())
+    }
+    
+    /// Prepare emergency shutdown (for testing)
+    pub fn prepare_emergency_shutdown(&mut self) -> Result<(), BeaconError> {
+        self.log_info("Preparing emergency shutdown");
+        self.power_manager.prepare_emergency_shutdown()?;
+        Ok(())
+    }
+    
     /// Get current beacon status
     pub fn get_status(&self) -> BeaconStatus {
         let battery_status = self.power_manager.get_battery_status()

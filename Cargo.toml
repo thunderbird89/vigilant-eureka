@@ -3,6 +3,7 @@ members = [
     "receiver",
     "beacon",
     "shared-positioning",
+    "beacon-emulator",
 ]
 
 edition = "2021"

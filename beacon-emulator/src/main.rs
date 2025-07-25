@@ -970,8 +970,11 @@ async fn execute_daemon_command(
         }
     }
     
-    // Create daemon server
-    let daemon_server = DaemonServer::new(std::mem::replace(emulator, EmulatorManager::new("temp"))).await
+    // Create daemon server with shared emulator state
+    let emulator_arc = std::sync::Arc::new(tokio::sync::Mutex::new(
+        std::mem::replace(emulator, EmulatorManager::new("temp"))
+    ));
+    let daemon_server = DaemonServer::new_with_shared_state(emulator_arc.clone()).await
         .map_err(|e| EmulatorError::ConfigError(format!("Failed to create daemon server: {}", e)))?;
     
     // Set up Ctrl+C handler
@@ -990,28 +993,25 @@ async fn execute_daemon_command(
         }
     });
     
+    // Initialize display
+    if !background {
+        // Hide cursor and clear screen
+        print!("\x1B[?25l\x1B[2J\x1B[1;1H");
+        io::stdout().flush().unwrap();
+    }
+    
     // Status display loop
     loop {
         tokio::select! {
             _ = status_timer.tick() => {
                 if !background {
-                    // For now, just show that daemon is running
-                    // In a full implementation, we'd query the daemon for status
-                    print!("\x1B[2J\x1B[1;1H");
-                    println!("Beacon Emulator Daemon - {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
-                    println!("Status: Running and accepting CLI commands");
-                    println!("Socket: {}", beacon_emulator::daemon_protocol::get_socket_path().display());
-                    println!("{}", "-".repeat(80));
-                    println!("Use CLI commands in another terminal:");
-                    println!("  beacon-emulator list");
-                    println!("  beacon-emulator create --lat 32.0 --lon 45.0");
-                    println!("  beacon-emulator start --all");
-                    println!("\nPress Ctrl+C to stop daemon");
-                    io::stdout().flush().unwrap();
+                    display_live_dashboard(&emulator_arc).await;
                 }
             }
             _ = shutdown_rx.recv() => {
                 if !background {
+                    // Show cursor and clear line
+                    print!("\x1B[?25h\x1B[2K");
                     println!("\nShutting down daemon...");
                 }
                 break;
@@ -1023,8 +1023,83 @@ async fn execute_daemon_command(
     server_handle.abort();
     
     if !background {
+        // Restore terminal state
+        print!("\x1B[?25h\x1B[2J\x1B[1;1H");
         println!("Daemon stopped.");
+        io::stdout().flush().unwrap();
     }
     
     Ok(())
+}
+
+async fn display_live_dashboard(emulator_arc: &std::sync::Arc<tokio::sync::Mutex<EmulatorManager>>) {
+    let emulator = emulator_arc.lock().await;
+    
+    // Move cursor to top-left and clear screen
+    print!("\x1B[1;1H\x1B[0J");
+    
+    // Header
+    println!("┌─────────────────────────────────────────────────────────────────────────────────┐");
+    println!("│                        🚨 Beacon Emulator Daemon                               │");
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    
+    // Status line
+    let stats = emulator.get_manager_stats();
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    println!("│ Status: RUNNING │ Time: {} │ Channel: {} │", timestamp, stats.current_channel);
+    println!("│ Socket: {} │", beacon_emulator::daemon_protocol::get_socket_path().display());
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    
+    // Summary stats
+    println!("│ Total: {:>3} │ Running: {:>3} │ Stopped: {:>3} │ Channels: {:>3} │ State: {} │", 
+             stats.total_beacons, 
+             stats.running_beacons, 
+             stats.stopped_beacons, 
+             stats.active_channels,
+             emulator.get_state_file_path().file_name().unwrap_or_default().to_string_lossy());
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    
+    // Beacon list header
+    if stats.total_beacons > 0 {
+        println!("│ ID                                   │ Status  │ Position          │ Messages │");
+        println!("├──────────────────────────────────────┼─────────┼───────────────────┼──────────┤");
+        
+        // Beacon list
+        let beacons = emulator.list_beacons();
+        for beacon in beacons.iter().take(15) { // Limit to 15 beacons to fit on screen
+            let status_icon = if beacon.is_running { "🟢 RUN" } else { "🔴 STP" };
+            let position = format!("{:.3},{:.3},{:.0}m", 
+                                 beacon.position.latitude, 
+                                 beacon.position.longitude, 
+                                 beacon.position.depth);
+            let id_short = format!("{}...{}", 
+                                 &beacon.id.to_string()[..8], 
+                                 &beacon.id.to_string()[28..]);
+            
+            println!("│ {} │ {} │ {:>17} │ {:>8} │", 
+                     id_short, status_icon, position, beacon.stats.messages_sent);
+        }
+        
+        if beacons.len() > 15 {
+            println!("│ ... and {} more beacons (use 'beacon-emulator list' for full list) │", 
+                     beacons.len() - 15);
+        }
+    } else {
+        println!("│                              No beacons configured                             │");
+        println!("│                                                                               │");
+        println!("│  Create beacons using CLI commands in another terminal:                      │");
+        println!("│    beacon-emulator create --lat 32.0 --lon 45.0 --start                     │");
+        println!("│    beacon-emulator create --lat 33.0 --lon 46.0 --movement linear:1.5:45    │");
+    }
+    
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    println!("│ CLI Commands: list │ create │ start │ stop │ status │ clear │ Ctrl+C to quit   │");
+    println!("└─────────────────────────────────────────────────────────────────────────────────┘");
+    
+    // Add some padding for terminal variations
+    for _ in 0..3 {
+        println!();
+    }
+    
+    io::stdout().flush().unwrap();
 }

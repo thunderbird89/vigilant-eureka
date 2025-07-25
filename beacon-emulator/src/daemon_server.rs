@@ -31,6 +31,23 @@ impl DaemonServer {
         })
     }
     
+    pub async fn new_with_shared_state(emulator: Arc<Mutex<EmulatorManager>>) -> Result<Self, Box<dyn std::error::Error>> {
+        let socket_path = get_socket_path();
+        
+        // Remove existing socket file if it exists
+        if socket_path.exists() {
+            std::fs::remove_file(&socket_path)?;
+        }
+        
+        let listener = UnixListener::bind(&socket_path)?;
+        info!("Daemon listening on socket: {}", socket_path.display());
+        
+        Ok(Self {
+            emulator,
+            listener,
+        })
+    }
+    
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         info!("Daemon server started, accepting connections...");
         

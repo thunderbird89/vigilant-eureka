@@ -1,12 +1,20 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing::{info, warn};
+use std::time::Duration;
+use tracing::{error, info};
+use uuid::Uuid;
 
 use crate::config::ConfigManager;
 use crate::beacon_controller::BeaconController;
+use crate::deployment::{
+    ConfigGenerator, BeaconConfigTemplate, DeploymentSite, DeploymentType,
+    EnvironmentalConditions, FleetManager, DeploymentValidator, RemoteConfigManager,
+    StatusMonitor, BeaconFleet, BeaconDeployment, BeaconHealth, SerializableGeodeticPosition,
+};
 use shared_positioning::{
     MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver,
+    GeodeticPosition,
 };
 
 // Type alias for the concrete beacon controller type
@@ -31,6 +39,8 @@ pub enum CliCommands {
         #[arg(short, long, default_value = "beacon-default.toml")]
         output: PathBuf,
     },
+    /// Deployment and operational tools
+    Deploy(DeployCommand),
 }
 
 #[derive(Parser)]
@@ -430,4 +440,491 @@ async fn create_temp_beacon_controller(config: crate::beacon_controller::BeaconC
         communication_manager,
         transceiver,
     ).context("Failed to create beacon controller")
+}
+#[
+derive(Parser)]
+pub struct DeployCommand {
+    #[command(subcommand)]
+    pub action: DeployAction,
+}
+
+#[derive(Subcommand)]
+pub enum DeployAction {
+    /// Generate beacon configurations for deployment
+    GenerateConfigs {
+        /// Number of beacon configurations to generate
+        #[arg(short, long, default_value = "1")]
+        count: u32,
+        /// Output directory for configurations
+        #[arg(short, long, default_value = "deployment")]
+        output: PathBuf,
+        /// Site configuration file
+        #[arg(short, long)]
+        site_config: Option<PathBuf>,
+        /// Configuration template file
+        #[arg(short, long)]
+        template: Option<PathBuf>,
+    },
+    /// Validate deployment configurations
+    ValidateDeployment {
+        /// Deployment manifest file or directory
+        #[arg(short, long)]
+        deployment: PathBuf,
+        /// Test duration in seconds
+        #[arg(short, long, default_value = "30")]
+        test_duration: u64,
+    },
+    /// Monitor fleet status
+    MonitorFleet {
+        /// Fleet configuration file
+        #[arg(short, long)]
+        fleet_config: PathBuf,
+        /// Continuous monitoring interval in seconds
+        #[arg(short, long)]
+        interval: Option<u64>,
+    },
+    /// Update beacon configurations remotely
+    UpdateConfigs {
+        /// Fleet configuration file
+        #[arg(short, long)]
+        fleet_config: PathBuf,
+        /// Configuration template to apply
+        #[arg(short, long)]
+        template: PathBuf,
+        /// Specific beacon IDs to update (comma-separated)
+        #[arg(short, long)]
+        beacons: Option<String>,
+    },
+    /// Manage beacon fleet
+    Fleet {
+        #[command(subcommand)]
+        action: FleetAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum FleetAction {
+    /// Create a new fleet
+    Create {
+        /// Fleet ID
+        #[arg(short, long)]
+        id: String,
+        /// Fleet name
+        #[arg(short, long)]
+        name: String,
+        /// Data directory
+        #[arg(short, long, default_value = "fleet_data")]
+        data_dir: PathBuf,
+    },
+    /// Add a site to the fleet
+    AddSite {
+        /// Fleet ID
+        #[arg(short, long)]
+        fleet_id: String,
+        /// Site configuration file
+        #[arg(short, long)]
+        site_config: PathBuf,
+        /// Data directory
+        #[arg(short, long, default_value = "fleet_data")]
+        data_dir: PathBuf,
+    },
+    /// Add beacons to the fleet
+    AddBeacons {
+        /// Fleet ID
+        #[arg(short, long)]
+        fleet_id: String,
+        /// Deployment manifest file
+        #[arg(short, long)]
+        deployment: PathBuf,
+        /// Data directory
+        #[arg(short, long, default_value = "fleet_data")]
+        data_dir: PathBuf,
+    },
+    /// Show fleet summary
+    Summary {
+        /// Fleet ID
+        #[arg(short, long)]
+        fleet_id: String,
+        /// Data directory
+        #[arg(short, long, default_value = "fleet_data")]
+        data_dir: PathBuf,
+    },
+    /// Generate deployment report
+    Report {
+        /// Fleet ID
+        #[arg(short, long)]
+        fleet_id: String,
+        /// Output file
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Data directory
+        #[arg(short, long, default_value = "fleet_data")]
+        data_dir: PathBuf,
+    },
+}
+
+impl DeployCommand {
+    pub async fn execute(&self, _config_path: &PathBuf) -> Result<()> {
+        match &self.action {
+            DeployAction::GenerateConfigs { count, output, site_config, template } => {
+                self.generate_configs(*count, output, site_config.as_ref(), template.as_ref()).await
+            }
+            DeployAction::ValidateDeployment { deployment, test_duration } => {
+                self.validate_deployment(deployment, *test_duration).await
+            }
+            DeployAction::MonitorFleet { fleet_config, interval } => {
+                self.monitor_fleet(fleet_config, *interval).await
+            }
+            DeployAction::UpdateConfigs { fleet_config, template, beacons } => {
+                self.update_configs(fleet_config, template, beacons.as_ref()).await
+            }
+            DeployAction::Fleet { action } => {
+                self.handle_fleet_action(action).await
+            }
+        }
+    }
+    
+    async fn generate_configs(
+        &self,
+        count: u32,
+        output: &PathBuf,
+        site_config: Option<&PathBuf>,
+        template: Option<&PathBuf>,
+    ) -> Result<()> {
+        info!("Generating {} beacon configurations", count);
+        
+        // Load or create default site configuration
+        let site = if let Some(site_path) = site_config {
+            let site_content = tokio::fs::read_to_string(site_path).await
+                .context("Failed to read site configuration")?;
+            serde_json::from_str(&site_content)
+                .context("Failed to parse site configuration")?
+        } else {
+            // Create default site
+            DeploymentSite {
+                site_id: "default_site".to_string(),
+                name: "Default Deployment Site".to_string(),
+                location: SerializableGeodeticPosition {
+                    latitude: 40.7128,
+                    longitude: -74.0060,
+                    depth: 0.0,
+                },
+                deployment_type: DeploymentType::Surface,
+                environmental_conditions: EnvironmentalConditions {
+                    temperature_range_c: (5.0, 25.0),
+                    wave_height_m: 1.0,
+                    current_speed_ms: 0.5,
+                    salinity_ppt: 35.0,
+                },
+                expected_beacons: count,
+            }
+        };
+        
+        // Load or create default template
+        let template = if let Some(template_path) = template {
+            let template_content = tokio::fs::read_to_string(template_path).await
+                .context("Failed to read template configuration")?;
+            serde_json::from_str(&template_content)
+                .context("Failed to parse template configuration")?
+        } else {
+            BeaconConfigTemplate::default()
+        };
+        
+        let config_generator = ConfigGenerator::with_template(template);
+        let deployments = config_generator.generate_deployment_configs(&site, count, output).await
+            .context("Failed to generate deployment configurations")?;
+        
+        println!("✓ Generated {} beacon configurations in: {}", deployments.len(), output.display());
+        println!("  Site: {} ({})", site.name, site.site_id);
+        
+        for deployment in &deployments {
+            println!("  - Beacon {}: Expected battery life {} days", 
+                deployment.beacon_id, deployment.expected_battery_life_days);
+        }
+        
+        Ok(())
+    }
+    
+    async fn validate_deployment(&self, deployment_path: &PathBuf, test_duration: u64) -> Result<()> {
+        info!("Validating deployment: {}", deployment_path.display());
+        
+        let validator = DeploymentValidator::new(Duration::from_secs(test_duration));
+        
+        // Load deployment manifest
+        let deployments = if deployment_path.is_file() {
+            let manifest_content = tokio::fs::read_to_string(deployment_path).await
+                .context("Failed to read deployment manifest")?;
+            let deployments: Vec<BeaconDeployment> = serde_json::from_str(&manifest_content)
+                .context("Failed to parse deployment manifest")?;
+            deployments
+        } else {
+            // Look for manifest in directory
+            let manifest_path = deployment_path.join("deployment_manifest.json");
+            let manifest_content = tokio::fs::read_to_string(&manifest_path).await
+                .context("Failed to read deployment manifest from directory")?;
+            serde_json::from_str(&manifest_content)
+                .context("Failed to parse deployment manifest")?
+        };
+        
+        let validation_report = validator.validate_fleet_deployment(&deployments).await
+            .context("Failed to validate deployment")?;
+        
+        println!("=== DEPLOYMENT VALIDATION REPORT ===");
+        println!("Total Beacons: {}", validation_report.total_beacons);
+        println!("Passed: {}", validation_report.passed_count);
+        println!("Failed: {}", validation_report.failed_count);
+        println!("Success Rate: {:.1}%", 
+            (validation_report.passed_count as f64 / validation_report.total_beacons as f64) * 100.0);
+        
+        for report in &validation_report.validation_reports {
+            println!("\n--- Beacon {} ---", report.beacon_id);
+            println!("Overall Result: {}", if report.overall_result { "✓ PASS" } else { "✗ FAIL" });
+            
+            for test in &report.tests {
+                let status = if test.passed { "✓" } else { "✗" };
+                println!("  {} {}: {} ({:.2}s)", status, test.test_name, test.details, test.duration.as_secs_f64());
+            }
+            
+            if !report.recommendations.is_empty() {
+                println!("  Recommendations:");
+                for rec in &report.recommendations {
+                    println!("    - {}", rec);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    async fn monitor_fleet(&self, fleet_config: &PathBuf, interval: Option<u64>) -> Result<()> {
+        info!("Monitoring fleet: {}", fleet_config.display());
+        
+        // Load fleet configuration
+        let fleet_content = tokio::fs::read_to_string(fleet_config).await
+            .context("Failed to read fleet configuration")?;
+        let fleet: BeaconFleet = serde_json::from_str(&fleet_content)
+            .context("Failed to parse fleet configuration")?;
+        
+        let monitor = StatusMonitor::new(fleet);
+        
+        if let Some(interval_secs) = interval {
+            // Continuous monitoring
+            println!("Starting continuous monitoring (interval: {}s)", interval_secs);
+            println!("Press Ctrl+C to stop");
+            
+            loop {
+                match monitor.monitor_fleet_status().await {
+                    Ok(report) => {
+                        println!("\n=== FLEET STATUS ({:?}) ===", report.timestamp);
+                        println!("Fleet: {}", report.fleet_id);
+                        println!("Total Beacons: {}", report.total_beacons);
+                        println!("Healthy: {} | Warning: {} | Critical: {}", 
+                            report.healthy_count, report.warning_count, report.critical_count);
+                        
+                        for (beacon_id, status) in &report.beacon_statuses {
+                            let health_icon = match status.health {
+                                BeaconHealth::Healthy => "✓",
+                                BeaconHealth::Warning => "⚠",
+                                BeaconHealth::Critical => "✗",
+                            };
+                            println!("  {} {}: Battery {:.1}% | GPS {:?}", 
+                                health_icon, beacon_id, status.battery_level, status.gps_status);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to get fleet status: {}", e);
+                    }
+                }
+                
+                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+            }
+        } else {
+            // Single status check
+            let report = monitor.monitor_fleet_status().await
+                .context("Failed to get fleet status")?;
+            
+            println!("=== FLEET STATUS REPORT ===");
+            println!("Fleet: {}", report.fleet_id);
+            println!("Timestamp: {:?}", report.timestamp);
+            println!("Total Beacons: {}", report.total_beacons);
+            println!("Healthy: {} ({:.1}%)", report.healthy_count, 
+                (report.healthy_count as f64 / report.total_beacons as f64) * 100.0);
+            println!("Warning: {} ({:.1}%)", report.warning_count,
+                (report.warning_count as f64 / report.total_beacons as f64) * 100.0);
+            println!("Critical: {} ({:.1}%)", report.critical_count,
+                (report.critical_count as f64 / report.total_beacons as f64) * 100.0);
+            
+            println!("\n--- Beacon Details ---");
+            for (beacon_id, status) in &report.beacon_statuses {
+                println!("Beacon {}: {:?}", beacon_id, status.health);
+                println!("  Battery: {:.1}%", status.battery_level);
+                println!("  GPS: {:?}", status.gps_status);
+                if let Some(last_contact) = status.last_contact {
+                    println!("  Last Contact: {:?}", last_contact);
+                } else {
+                    println!("  Last Contact: Never");
+                }
+                if let Some(position) = &status.position {
+                    println!("  Position: {:.6}, {:.6}", position.latitude, position.longitude);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    async fn update_configs(
+        &self,
+        fleet_config: &PathBuf,
+        template: &PathBuf,
+        beacons: Option<&String>,
+    ) -> Result<()> {
+        info!("Updating beacon configurations");
+        
+        // Load fleet configuration
+        let fleet_content = tokio::fs::read_to_string(fleet_config).await
+            .context("Failed to read fleet configuration")?;
+        let fleet: BeaconFleet = serde_json::from_str(&fleet_content)
+            .context("Failed to parse fleet configuration")?;
+        
+        // Load configuration template
+        let template_content = tokio::fs::read_to_string(template).await
+            .context("Failed to read template configuration")?;
+        let template: BeaconConfigTemplate = serde_json::from_str(&template_content)
+            .context("Failed to parse template configuration")?;
+        
+        // Create remote configuration manager
+        let mut config_manager = RemoteConfigManager::new(fleet);
+        
+        // Determine target beacons
+        let target_beacons: Vec<Uuid> = if let Some(beacon_list) = beacons {
+            beacon_list.split(',')
+                .map(|s| s.trim().parse::<Uuid>())
+                .collect::<Result<Vec<_>, _>>()
+                .context("Failed to parse beacon IDs")?
+        } else {
+            config_manager.get_fleet().beacons.keys().cloned().collect()
+        };
+        
+        println!("Updating configuration for {} beacons", target_beacons.len());
+        
+        let update_report = config_manager.apply_template_to_beacons(target_beacons, template).await
+            .context("Failed to update beacon configurations")?;
+        
+        println!("=== CONFIGURATION UPDATE REPORT ===");
+        println!("Timestamp: {:?}", update_report.timestamp);
+        println!("Total Attempted: {}", update_report.total_attempted);
+        println!("Successful: {}", update_report.successful_updates.len());
+        println!("Failed: {}", update_report.failed_updates.len());
+        
+        if !update_report.successful_updates.is_empty() {
+            println!("\nSuccessful Updates:");
+            for beacon_id in &update_report.successful_updates {
+                println!("  ✓ {}", beacon_id);
+            }
+        }
+        
+        if !update_report.failed_updates.is_empty() {
+            println!("\nFailed Updates:");
+            for (beacon_id, error) in &update_report.failed_updates {
+                println!("  ✗ {}: {}", beacon_id, error);
+            }
+        }
+        
+        Ok(())
+    }
+    
+
+    async fn handle_fleet_action(&self, action: &FleetAction) -> Result<()> {
+        match action {
+            FleetAction::Create { id, name, data_dir } => {
+                let fleet_manager = FleetManager::create_fleet(id.clone(), name.clone(), data_dir.clone()).await
+                    .context("Failed to create fleet")?;
+                
+                println!("✓ Created fleet: {} ({})", name, id);
+                println!("  Data directory: {}", data_dir.display());
+                
+                Ok(())
+            }
+            FleetAction::AddSite { fleet_id, site_config, data_dir } => {
+                let mut fleet_manager = FleetManager::load_fleet(fleet_id, data_dir.clone()).await
+                    .context("Failed to load fleet")?;
+                
+                let site_content = tokio::fs::read_to_string(site_config).await
+                    .context("Failed to read site configuration")?;
+                let site: DeploymentSite = serde_json::from_str(&site_content)
+                    .context("Failed to parse site configuration")?;
+                
+                fleet_manager.add_site(site.clone()).await
+                    .context("Failed to add site to fleet")?;
+                
+                println!("✓ Added site: {} ({}) to fleet {}", site.name, site.site_id, fleet_id);
+                
+                Ok(())
+            }
+            FleetAction::AddBeacons { fleet_id, deployment, data_dir } => {
+                let mut fleet_manager = FleetManager::load_fleet(fleet_id, data_dir.clone()).await
+                    .context("Failed to load fleet")?;
+                
+                let deployment_content = tokio::fs::read_to_string(deployment).await
+                    .context("Failed to read deployment manifest")?;
+                let deployments: Vec<BeaconDeployment> = serde_json::from_str(&deployment_content)
+                    .context("Failed to parse deployment manifest")?;
+                
+                let deployment_count = deployments.len();
+                
+                for deployment in deployments {
+                    fleet_manager.add_beacon(deployment.clone()).await
+                        .context(format!("Failed to add beacon {}", deployment.beacon_id))?;
+                }
+                
+                println!("✓ Added {} beacons to fleet {}", deployment_count, fleet_id);
+                
+                Ok(())
+            }
+            FleetAction::Summary { fleet_id, data_dir } => {
+                let fleet_manager = FleetManager::load_fleet(fleet_id, data_dir.clone()).await
+                    .context("Failed to load fleet")?;
+                
+                let summary = fleet_manager.get_fleet_summary();
+                
+                println!("=== FLEET SUMMARY ===");
+                println!("Fleet: {} ({})", summary.name, summary.fleet_id);
+                println!("Created: {:?}", summary.created_at);
+                println!("Last Updated: {:?}", summary.last_updated);
+                println!("Total Beacons: {}", summary.total_beacons);
+                println!("Total Sites: {}", summary.total_sites);
+                
+                if !summary.sites_by_type.is_empty() {
+                    println!("\nSites by Type:");
+                    for (site_type, count) in &summary.sites_by_type {
+                        println!("  {}: {}", site_type, count);
+                    }
+                }
+                
+                Ok(())
+            }
+            FleetAction::Report { fleet_id, output, data_dir } => {
+                let fleet_manager = FleetManager::load_fleet(fleet_id, data_dir.clone()).await
+                    .context("Failed to load fleet")?;
+                
+                let report = fleet_manager.generate_deployment_report().await
+                    .context("Failed to generate deployment report")?;
+                
+                let report_content = serde_json::to_string_pretty(&report)
+                    .context("Failed to serialize deployment report")?;
+                
+                if let Some(output_path) = output {
+                    tokio::fs::write(output_path, &report_content).await
+                        .context("Failed to write deployment report")?;
+                    println!("✓ Deployment report saved to: {}", output_path.display());
+                } else {
+                    println!("=== FLEET DEPLOYMENT REPORT ===");
+                    println!("{}", report_content);
+                }
+                
+                Ok(())
+            }
+        }
+    }
 }

@@ -931,37 +931,7 @@ where
         }
     }
     
-    /// Send emergency messages before shutdown
-    fn send_emergency_messages(&mut self) -> Result<(), BeaconError> {
-        self.log_info("Sending emergency messages");
-        
-        for i in 0..self.config.emergency_config.emergency_message_count {
-            if let Err(e) = self.handle_transmission() {
-                self.log_error(&format!("Emergency transmission {} failed: {}", i + 1, e));
-            }
-            
-            // Brief delay between emergency messages
-            thread::sleep(Duration::from_millis(1000));
-        }
-        
-        Ok(())
-    }
-    
-    /// Prepare for emergency shutdown
-    fn prepare_emergency_shutdown(&mut self) -> Result<(), BeaconError> {
-        self.log_info("Preparing emergency shutdown");
-        
-        // Send final emergency messages
-        self.send_emergency_messages()?;
-        
-        // Prepare power manager for shutdown
-        self.power_manager.prepare_emergency_shutdown()?;
-        
-        // Stop all operations
-        self.stop()?;
-        
-        Ok(())
-    }
+
     
     /// Calculate signal quality based on system status
     fn calculate_signal_quality(&self) -> u8 {

@@ -11,6 +11,7 @@ use uuid::Uuid;
 mod beacon_controller;
 mod cli;
 mod config;
+mod deployment;
 mod signal_handler;
 
 use beacon_controller::{BeaconController, BeaconConfig, MessageVersion, EmergencyConfig};
@@ -109,6 +110,9 @@ async fn handle_cli_command(command: CliCommands, config_path: &PathBuf) -> Resu
         }
         CliCommands::GenerateConfig { output } => {
             generate_default_config(&output).await
+        }
+        CliCommands::Deploy(deploy_cmd) => {
+            deploy_cmd.execute(config_path).await
         }
     }
 }

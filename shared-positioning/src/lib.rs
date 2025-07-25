@@ -11,6 +11,9 @@ pub mod gps_manager;
 pub mod power_manager;
 pub mod communication_manager;
 pub mod transmission_manager;
+pub mod environmental_monitor;
+pub mod hardware_monitor;
+pub mod reliability_monitor;
 
 // Re-export commonly used types for convenience
 pub use message_parser::{
@@ -77,4 +80,18 @@ pub use beacon_config::{
     PowerConfig as BeaconPowerConfig, CommunicationConfig as BeaconCommunicationConfig,
     EmergencyConfig, HardwareConfig, MessageVersion as BeaconMessageVersion,
     ConfigExportFormat, ConfigValidator
+};
+pub use environmental_monitor::{
+    EnvironmentalMonitor, ExtendedEnvironmentalConditions, EnvironmentalThresholds,
+    EnvironmentalError, AdaptationAction, EnvironmentalStats, MeasurementQuality,
+    CalibrationStatus, ExtremeSeverity
+};
+pub use hardware_monitor::{
+    HardwareMonitor, HardwareMonitorConfig, HardwareMonitorStats, DiagnosticResult,
+    ComponentHealth, RecommendedAction, RecoveryStrategy as HardwareRecoveryStrategy, HardwareFaultError
+};
+pub use reliability_monitor::{
+    ReliabilityMonitor, ReliabilityMetrics, ComponentReliability, ReliabilityThresholds,
+    ReliabilityReport, FailureEvent, MaintenanceRecommendation as ReliabilityMaintenanceRecommendation,
+    ReliabilityError, HealthTrend, ThresholdViolation as ReliabilityThresholdViolation
 };

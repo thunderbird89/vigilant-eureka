@@ -277,7 +277,7 @@ impl TransmissionStats {
 }
 
 /// Environmental conditions for adaptive transmission
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnvironmentalConditions {
     pub water_temperature_c: Option<f32>,
     pub salinity_ppt: Option<f32>,

@@ -194,7 +194,7 @@ pub enum SystemErrorType {
 }
 
 /// Hardware components
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HardwareComponent {
     GpsReceiver,
     Transceiver,
@@ -449,7 +449,7 @@ pub enum CriticalFailureType {
 }
 
 /// Error severity levels
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ErrorSeverity {
     Info,       // Informational, no action needed
     Warning,    // Potential issue, monitoring recommended

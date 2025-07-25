@@ -23,7 +23,14 @@ use shared_positioning::{
     BatteryStatusSnapshot, BeaconBatteryHealth, BeaconSystemState, ResourceUsageSnapshot,
     GpsStatusSnapshot, CommunicationStatusSnapshot, TransmissionStatusSnapshot,
     EnvironmentalMetrics, ConsoleLogHandler, StructuredFileLogHandler,
-    ErrorSeverity, RecoveryStrategy, BeaconPowerMode, BeaconChargingStatus
+    ErrorSeverity, RecoveryStrategy, BeaconPowerMode, BeaconChargingStatus,
+    // Environmental and reliability monitoring imports
+    EnvironmentalMonitor, ExtendedEnvironmentalConditions, EnvironmentalThresholds,
+    EnvironmentalError, AdaptationAction, EnvironmentalStats,
+    HardwareMonitor, HardwareMonitorConfig, HardwareMonitorStats, DiagnosticResult,
+    ComponentHealth, RecommendedAction, HardwareFaultError,
+    ReliabilityMonitor, ReliabilityMetrics, ReliabilityThresholds, ReliabilityReport,
+    FailureEvent, ReliabilityError, HealthTrend
 };
 
 
@@ -218,6 +225,15 @@ where
     // Enhanced error handling and diagnostics
     diagnostic_system: DiagnosticSystemManager,
     last_diagnostic_report: Option<SystemTime>,
+    // Environmental monitoring and adaptation
+    environmental_monitor: EnvironmentalMonitor,
+    last_environmental_update: Option<SystemTime>,
+    // Hardware fault detection and recovery
+    hardware_monitor: HardwareMonitor,
+    last_hardware_diagnostic: Option<SystemTime>,
+    // System reliability monitoring
+    reliability_monitor: ReliabilityMonitor,
+    last_reliability_report: Option<SystemTime>,
 }
 
 impl<G, P, C, T> BeaconController<G, P, C, T>
@@ -277,6 +293,15 @@ where
             running: false,
             diagnostic_system,
             last_diagnostic_report: None,
+            // Initialize environmental monitoring
+            environmental_monitor: EnvironmentalMonitor::new(EnvironmentalThresholds::default()),
+            last_environmental_update: None,
+            // Initialize hardware monitoring
+            hardware_monitor: HardwareMonitor::new(HardwareMonitorConfig::default()),
+            last_hardware_diagnostic: None,
+            // Initialize reliability monitoring
+            reliability_monitor: ReliabilityMonitor::new(ReliabilityThresholds::default()),
+            last_reliability_report: None,
         })
     }
     
@@ -474,6 +499,9 @@ where
         let mut last_communication_check = Instant::now();
         let mut last_health_check = Instant::now();
         let mut last_diagnostic_report = Instant::now();
+        let mut last_environmental_check = Instant::now();
+        let mut last_hardware_diagnostic = Instant::now();
+        let mut last_reliability_check = Instant::now();
         
         while self.running {
             let now = Instant::now();
@@ -536,6 +564,30 @@ where
                 ));
                 
                 last_diagnostic_report = now;
+            }
+
+            // Environmental monitoring and adaptation
+            if now.duration_since(last_environmental_check) >= Duration::from_secs(30) { // Every 30 seconds
+                if let Err(e) = self.update_environmental_monitoring() {
+                    self.log_warning(&format!("Environmental monitoring failed: {}", e));
+                }
+                last_environmental_check = now;
+            }
+
+            // Hardware diagnostics
+            if now.duration_since(last_hardware_diagnostic) >= Duration::from_secs(120) { // Every 2 minutes
+                if let Err(e) = self.run_hardware_diagnostics() {
+                    self.log_error(&format!("Hardware diagnostics failed: {}", e));
+                }
+                last_hardware_diagnostic = now;
+            }
+
+            // Reliability monitoring
+            if now.duration_since(last_reliability_check) >= Duration::from_secs(600) { // Every 10 minutes
+                if let Err(e) = self.update_reliability_monitoring() {
+                    self.log_warning(&format!("Reliability monitoring failed: {}", e));
+                }
+                last_reliability_check = now;
             }
             
             // Process control messages
@@ -1216,6 +1268,412 @@ where
         };
         self.error_log.push(entry);
         println!("[ERROR] {}", message);
+    }
+
+    /// Update environmental monitoring and handle adaptation actions
+    fn update_environmental_monitoring(&mut self) -> Result<(), BeaconError> {
+        // Collect current environmental conditions
+        let battery_status = self.power_manager.get_battery_status()
+            .map_err(|e| BeaconError::PowerError {
+                error_type: PowerErrorType::ThresholdViolation {
+                    threshold_name: "battery_read".to_string(),
+                    value: 0.0,
+                },
+                battery_status: BatteryStatusSnapshot {
+                    voltage_v: 0.0,
+                    current_ma: 0.0,
+                    capacity_percent: 0.0,
+                    temperature_c: 0.0,
+                    health: BeaconBatteryHealth::Unknown,
+                    cycles: 0,
+                },
+                power_mode: BeaconPowerMode::Normal,
+                charging_status: BeaconChargingStatus::NotCharging,
+            })?;
+
+        // Create extended environmental conditions with current sensor readings
+        let extended_conditions = ExtendedEnvironmentalConditions {
+            base_conditions: self.environmental_conditions.clone(),
+            air_temperature_c: None, // Would be read from temperature sensor
+            humidity_percent: None,   // Would be read from humidity sensor
+            atmospheric_pressure_hpa: None, // Would be read from pressure sensor
+            wind_speed_ms: None,     // Would be read from wind sensor
+            solar_irradiance_wm2: None, // Would be read from solar sensor
+            internal_temperature_c: Some(35.0), // Simulated internal temperature
+            cpu_temperature_c: Some(45.0),      // Simulated CPU temperature
+            battery_temperature_c: Some(battery_status.temperature_c),
+            enclosure_humidity_percent: None,
+            vibration_level_g: None, // Would be read from accelerometer
+            magnetic_field_strength_ut: None,
+            timestamp: SystemTime::now(),
+            measurement_quality: shared_positioning::MeasurementQuality {
+                overall_quality: 0.9,
+                sensor_health: std::collections::HashMap::new(),
+                calibration_status: std::collections::HashMap::new(),
+                last_calibration: std::collections::HashMap::new(),
+            },
+        };
+
+        // Update environmental monitor and get adaptation actions
+        match self.environmental_monitor.update_conditions(extended_conditions) {
+            Ok(actions) => {
+                self.last_environmental_update = Some(SystemTime::now());
+                
+                // Process adaptation actions
+                for action in actions {
+                    if let Err(e) = self.process_adaptation_action(action) {
+                        self.log_warning(&format!("Failed to process adaptation action: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.log_error(&format!("Environmental monitoring update failed: {}", e));
+                return Err(BeaconError::EnvironmentalError {
+                    condition: shared_positioning::error_handling::EnvironmentalCondition::TemperatureExtreme { 
+                        temperature_c: battery_status.temperature_c 
+                    },
+                    severity: ErrorSeverity::Warning,
+                    measurement: battery_status.temperature_c as f64,
+                    threshold: 50.0,
+                    mitigation_applied: false,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process environmental adaptation actions
+    fn process_adaptation_action(&mut self, action: AdaptationAction) -> Result<(), BeaconError> {
+        match action {
+            AdaptationAction::ReduceTransmissionPower { from, to } => {
+                self.log_info(&format!("Reducing transmission power from {} to {} due to environmental conditions", from, to));
+                self.current_power_level = to;
+                self.transceiver.set_transmission_power(to)
+                    .map_err(|_e| BeaconError::TransmissionError {
+                        error_type: TransmissionErrorType::TransceiverFault,
+                        message_sequence: self.transmission_sequence,
+                        transmission_power: to,
+                        retry_count: 0,
+                    })?;
+            }
+            AdaptationAction::IncreaseTransmissionPower { from, to } => {
+                self.log_info(&format!("Increasing transmission power from {} to {} due to environmental conditions", from, to));
+                self.current_power_level = to;
+                self.transceiver.set_transmission_power(to)
+                    .map_err(|_e| BeaconError::TransmissionError {
+                        error_type: TransmissionErrorType::TransceiverFault,
+                        message_sequence: self.transmission_sequence,
+                        transmission_power: to,
+                        retry_count: 0,
+                    })?;
+            }
+            AdaptationAction::ReduceTransmissionFrequency { from_ms, to_ms } => {
+                self.log_info(&format!("Reducing transmission frequency from {}ms to {}ms due to environmental conditions", from_ms, to_ms));
+                // Update transmission interval in config (simplified)
+                // In real implementation, would need to update the actual transmission scheduling
+            }
+            AdaptationAction::EnablePowerSaveMode => {
+                self.log_info("Enabling power save mode due to environmental conditions");
+                self.power_manager.set_power_mode(PowerOperationMode::PowerSave)
+                    .map_err(|_e| BeaconError::PowerError {
+                        error_type: PowerErrorType::PowerModeTransitionFailed,
+                        battery_status: BatteryStatusSnapshot {
+                            voltage_v: 0.0,
+                            current_ma: 0.0,
+                            capacity_percent: 0.0,
+                            temperature_c: 0.0,
+                            health: BeaconBatteryHealth::Unknown,
+                            cycles: 0,
+                        },
+                        power_mode: BeaconPowerMode::PowerSave,
+                        charging_status: BeaconChargingStatus::NotCharging,
+                    })?;
+                self.operational_state = OperationalState::PowerSave;
+            }
+            AdaptationAction::DisableNonEssentialSystems => {
+                self.log_warning("Disabling non-essential systems due to extreme environmental conditions");
+                // In real implementation, would disable non-critical subsystems
+            }
+            AdaptationAction::ActivateThermalManagement => {
+                self.log_warning("Activating thermal management due to high temperature");
+                // In real implementation, would activate cooling systems or reduce CPU frequency
+            }
+            AdaptationAction::RequestEmergencyShutdown { reason } => {
+                self.log_error(&format!("Emergency shutdown requested: {}", reason));
+                self.handle_emergency(EmergencyType::TemperatureExtreme)?;
+            }
+            AdaptationAction::AdjustSensorSampling { sensor, from_ms, to_ms } => {
+                self.log_info(&format!("Adjusting {} sensor sampling from {}ms to {}ms", sensor, from_ms, to_ms));
+                // In real implementation, would adjust sensor sampling rates
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run hardware diagnostics and handle fault detection
+    fn run_hardware_diagnostics(&mut self) -> Result<(), BeaconError> {
+        if !self.hardware_monitor.is_monitoring_active() {
+            self.hardware_monitor.start_monitoring();
+        }
+
+        // Run comprehensive diagnostics
+        match self.hardware_monitor.run_diagnostics(
+            &mut self.gps_manager,
+            &mut self.power_manager,
+            &mut self.communication_manager,
+            &mut self.transceiver,
+        ) {
+            Ok(results) => {
+                self.last_hardware_diagnostic = Some(SystemTime::now());
+                
+                // Process diagnostic results
+                for result in results {
+                    match result.health {
+                        ComponentHealth::Faulty { ref fault_description } => {
+                            self.log_error(&format!("Hardware fault detected in {:?}: {}", result.component, fault_description));
+                            
+                            // Record failure event for reliability monitoring
+                            let failure_event = FailureEvent {
+                                timestamp: SystemTime::now(),
+                                component: format!("{:?}", result.component),
+                                failure_type: "hardware_fault".to_string(),
+                                severity: ErrorSeverity::Error,
+                                duration: None,
+                                recovery_successful: false,
+                                recovery_time: None,
+                                impact_description: fault_description.clone(),
+                                root_cause: Some("hardware_diagnostic".to_string()),
+                            };
+                            self.reliability_monitor.record_failure(failure_event);
+                        }
+                        ComponentHealth::Failed => {
+                            self.log_error(&format!("Hardware component failed: {:?}", result.component));
+                            
+                            // Record critical failure
+                            let failure_event = FailureEvent {
+                                timestamp: SystemTime::now(),
+                                component: format!("{:?}", result.component),
+                                failure_type: "component_failure".to_string(),
+                                severity: ErrorSeverity::Critical,
+                                duration: None,
+                                recovery_successful: false,
+                                recovery_time: None,
+                                impact_description: "Component completely failed".to_string(),
+                                root_cause: Some("hardware_diagnostic".to_string()),
+                            };
+                            self.reliability_monitor.record_failure(failure_event);
+                        }
+                        ComponentHealth::Degraded { performance_impact } => {
+                            self.log_warning(&format!("Hardware component degraded: {:?} (impact: {:.1}%)", 
+                                result.component, performance_impact * 100.0));
+                            
+                            // Update component performance in reliability monitor
+                            self.reliability_monitor.update_component_performance(
+                                format!("{:?}", result.component),
+                                1.0 - performance_impact as f64
+                            );
+                        }
+                        ComponentHealth::Healthy => {
+                            // Update component performance as healthy
+                            self.reliability_monitor.update_component_performance(
+                                format!("{:?}", result.component),
+                                1.0
+                            );
+                        }
+                        ComponentHealth::Unknown => {
+                            self.log_warning(&format!("Hardware component status unknown: {:?}", result.component));
+                        }
+                    }
+
+                    // Process recommended actions
+                    match result.recommended_action {
+                        RecommendedAction::SoftReset => {
+                            self.log_info(&format!("Soft reset recommended for {:?}", result.component));
+                            // In real implementation, would perform soft reset
+                        }
+                        RecommendedAction::HardReset => {
+                            self.log_warning(&format!("Hard reset recommended for {:?}", result.component));
+                            // In real implementation, would perform hard reset
+                        }
+                        RecommendedAction::PowerCycle => {
+                            self.log_warning(&format!("Power cycle recommended for {:?}", result.component));
+                            // In real implementation, would power cycle component
+                        }
+                        RecommendedAction::Recalibrate => {
+                            self.log_info(&format!("Recalibration recommended for {:?}", result.component));
+                            // In real implementation, would recalibrate component
+                        }
+                        RecommendedAction::ReplaceComponent => {
+                            self.log_error(&format!("Component replacement required for {:?}", result.component));
+                            // In real implementation, would alert for maintenance
+                        }
+                        RecommendedAction::EmergencyShutdown => {
+                            self.log_error(&format!("Emergency shutdown recommended due to {:?} failure", result.component));
+                            self.handle_emergency(EmergencyType::HardwareFault)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) => {
+                self.log_error(&format!("Hardware diagnostics failed: {}", e));
+                return Err(BeaconError::HardwareError {
+                    component: HardwareComponent::Microcontroller,
+                    fault_type: HardwareFaultType::ComponentFailure,
+                    diagnostic_data: vec![],
+                    recovery_possible: true,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update reliability monitoring and generate reports
+    fn update_reliability_monitoring(&mut self) -> Result<(), BeaconError> {
+        if !self.reliability_monitor.is_monitoring_active() {
+            self.reliability_monitor.start_monitoring();
+        }
+
+        // Calculate current reliability metrics
+        match self.reliability_monitor.calculate_reliability_metrics() {
+            Ok(metrics) => {
+                self.log_info(&format!(
+                    "Reliability metrics: Availability: {:.1}%, MTBF: {:.1}h, Failure rate: {:.3}/h",
+                    metrics.overall_availability * 100.0,
+                    metrics.mean_time_between_failures.as_secs_f64() / 3600.0,
+                    metrics.failure_rate
+                ));
+
+                // Check for reliability threshold violations
+                if metrics.overall_availability < 0.95 {
+                    self.log_warning(&format!("Low system availability: {:.1}%", metrics.overall_availability * 100.0));
+                }
+
+                if metrics.failure_rate > 0.1 {
+                    self.log_warning(&format!("High failure rate: {:.3} failures/hour", metrics.failure_rate));
+                }
+
+                // Generate full reliability report periodically (every hour)
+                if let Some(last_report) = self.last_reliability_report {
+                    if SystemTime::now().duration_since(last_report).unwrap_or(Duration::from_secs(0)) > Duration::from_secs(3600) {
+                        self.generate_reliability_report()?;
+                    }
+                } else {
+                    self.generate_reliability_report()?;
+                }
+            }
+            Err(e) => {
+                self.log_error(&format!("Reliability metrics calculation failed: {}", e));
+                return Err(BeaconError::SystemError {
+                    error_type: SystemErrorType::SystemOverload,
+                    system_state: BeaconSystemState {
+                        operational_state: format!("{:?}", self.operational_state),
+                        uptime_ms: SystemTime::now().duration_since(self.start_time).unwrap_or(Duration::from_secs(0)).as_millis() as u64,
+                        last_gps_fix: self.last_gps_update,
+                        last_transmission: self.last_transmission,
+                        last_communication: self.last_communication,
+                        active_threads: 1,
+                        error_count: 0,
+                    },
+                    resource_usage: ResourceUsageSnapshot {
+                        memory_usage_bytes: 0,
+                        memory_total_bytes: 0,
+                        cpu_usage_percent: 0.0,
+                        flash_usage_bytes: 0,
+                        flash_total_bytes: 0,
+                        active_connections: 0,
+                    },
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate comprehensive reliability report
+    fn generate_reliability_report(&mut self) -> Result<(), BeaconError> {
+        match self.reliability_monitor.generate_reliability_report() {
+            Ok(report) => {
+                self.last_reliability_report = Some(SystemTime::now());
+                
+                self.log_info(&format!("Reliability Report Generated: {}", report.report_id));
+                self.log_info(&format!("Executive Summary: {}", report.executive_summary));
+                
+                // Log maintenance recommendations
+                if !report.maintenance_recommendations.is_empty() {
+                    self.log_info("Maintenance Recommendations:");
+                    for recommendation in &report.maintenance_recommendations {
+                        self.log_info(&format!("- {}: {} (Urgency: {:?})", 
+                            recommendation.component, 
+                            recommendation.description,
+                            recommendation.urgency
+                        ));
+                    }
+                }
+
+                // Log threshold violations
+                if !report.threshold_violations.is_empty() {
+                    self.log_warning("Reliability Threshold Violations:");
+                    for violation in &report.threshold_violations {
+                        self.log_warning(&format!("- {}: {:.3} exceeds threshold {:.3}", 
+                            violation.metric, 
+                            violation.current_value,
+                            violation.threshold_value
+                        ));
+                    }
+                }
+
+                // In real implementation, would save report to file or send to monitoring system
+            }
+            Err(e) => {
+                self.log_error(&format!("Failed to generate reliability report: {}", e));
+                return Err(BeaconError::SystemError {
+                    error_type: SystemErrorType::SystemOverload,
+                    system_state: BeaconSystemState {
+                        operational_state: format!("{:?}", self.operational_state),
+                        uptime_ms: SystemTime::now().duration_since(self.start_time).unwrap_or(Duration::from_secs(0)).as_millis() as u64,
+                        last_gps_fix: self.last_gps_update,
+                        last_transmission: self.last_transmission,
+                        last_communication: self.last_communication,
+                        active_threads: 1,
+                        error_count: 0,
+                    },
+                    resource_usage: ResourceUsageSnapshot {
+                        memory_usage_bytes: 0,
+                        memory_total_bytes: 0,
+                        cpu_usage_percent: 0.0,
+                        flash_usage_bytes: 0,
+                        flash_total_bytes: 0,
+                        active_connections: 0,
+                    },
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get environmental monitoring statistics
+    pub fn get_environmental_stats(&self) -> &EnvironmentalStats {
+        self.environmental_monitor.get_statistics()
+    }
+
+    /// Get hardware monitoring statistics
+    pub fn get_hardware_stats(&self) -> &HardwareMonitorStats {
+        self.hardware_monitor.get_statistics()
+    }
+
+    /// Get reliability monitoring statistics
+    pub fn get_reliability_stats(&self) -> (usize, usize, usize) {
+        self.reliability_monitor.get_statistics()
+    }
+
+    /// Check if thermal management is active
+    pub fn is_thermal_management_active(&self) -> bool {
+        self.environmental_monitor.is_thermal_management_active()
     }
 }
 

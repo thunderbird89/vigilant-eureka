@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use tokio::task::JoinHandle;
+use serde::{Serialize, Deserialize};
 use shared_positioning::{
     BeaconConfig,
     GeodeticPosition,
@@ -13,7 +14,25 @@ use crate::{
     VirtualCommunicationSpace,
     ScenarioType,
     ExportFormat,
+    MovementPattern,
 };
+
+/// Persistent beacon data for saving/loading state
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PersistentBeaconData {
+    pub id: Uuid,
+    pub position: GeodeticPosition,
+    pub config: BeaconConfig,
+    pub movement_pattern: MovementPattern,
+    pub intended_running: bool, // Whether the beacon should be running (persistent intent)
+}
+
+/// Emulator state that can be persisted
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EmulatorState {
+    pub beacons: Vec<PersistentBeaconData>,
+    pub current_channel: String,
+}
 
 /// Main emulator manager that coordinates virtual beacons
 pub struct EmulatorManager {
@@ -21,19 +40,44 @@ pub struct EmulatorManager {
     beacon_tasks: HashMap<Uuid, JoinHandle<()>>,
     communication_space: VirtualCommunicationSpace,
     current_channel: String,
+    state_file_path: PathBuf,
 }
 
 impl EmulatorManager {
     pub fn new(channel_name: &str) -> Self {
         let communication_space = VirtualCommunicationSpace::new();
         let current_channel = channel_name.to_string();
+        let state_file_path = Self::get_default_state_file_path();
         
         Self {
             virtual_beacons: HashMap::new(),
             beacon_tasks: HashMap::new(),
             communication_space,
             current_channel,
+            state_file_path,
         }
+    }
+    
+    /// Create a new emulator manager and load existing state
+    pub async fn new_with_persistence(channel_name: &str) -> Result<Self, EmulatorError> {
+        let mut manager = Self::new(channel_name);
+        manager.load_state().await?;
+        Ok(manager)
+    }
+    
+    /// Get the default state file path
+    fn get_default_state_file_path() -> PathBuf {
+        PathBuf::from("data/emulator_state.json")
+    }
+    
+    /// Set a custom state file path
+    pub fn set_state_file_path(&mut self, path: PathBuf) {
+        self.state_file_path = path;
+    }
+    
+    /// Get the current state file path
+    pub fn get_state_file_path(&self) -> &PathBuf {
+        &self.state_file_path
     }
     
     /// Create a new virtual beacon with optional configuration
@@ -65,6 +109,11 @@ impl EmulatorManager {
         
         self.virtual_beacons.insert(beacon_id, virtual_beacon);
         
+        // Save state after creating beacon
+        if let Err(e) = self.save_state().await {
+            eprintln!("Warning: Failed to save state after creating beacon: {}", e);
+        }
+        
         Ok(beacon_id)
     }
     
@@ -90,6 +139,11 @@ impl EmulatorManager {
             
             let task_handle = beacon.start().await?;
             self.beacon_tasks.insert(id, task_handle);
+            
+            // Save state after starting beacon
+            if let Err(e) = self.save_state().await {
+                eprintln!("Warning: Failed to save state after starting beacon: {}", e);
+            }
             
             Ok(())
         } else {
@@ -134,6 +188,11 @@ impl EmulatorManager {
                 ).await.ok(); // Ignore timeout errors
             }
             
+            // Save state after stopping beacon
+            if let Err(e) = self.save_state().await {
+                eprintln!("Warning: Failed to save state after stopping beacon: {}", e);
+            }
+            
             Ok(())
         } else {
             Err(EmulatorError::BeaconNotFound(id))
@@ -155,6 +214,12 @@ impl EmulatorManager {
             if let Some(task) = self.beacon_tasks.remove(&id) {
                 task.abort();
             }
+            
+            // Save state after removing beacon
+            if let Err(e) = self.save_state().await {
+                eprintln!("Warning: Failed to save state after removing beacon: {}", e);
+            }
+            
             Ok(())
         } else {
             Err(EmulatorError::BeaconNotFound(id))
@@ -364,6 +429,90 @@ impl EmulatorManager {
         &mut self.communication_space
     }
     
+    /// Save current emulator state to file
+    pub async fn save_state(&self) -> Result<(), EmulatorError> {
+        let mut beacon_data = Vec::new();
+        
+        for (id, beacon) in &self.virtual_beacons {
+            let status = beacon.get_status();
+            beacon_data.push(PersistentBeaconData {
+                id: *id,
+                position: status.position,
+                config: status.config,
+                movement_pattern: status.movement_pattern,
+                intended_running: status.is_running,
+            });
+        }
+        
+        let state = EmulatorState {
+            beacons: beacon_data,
+            current_channel: self.current_channel.clone(),
+        };
+        
+        // Ensure the data directory exists
+        if let Some(parent) = self.state_file_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        
+        let json = serde_json::to_string_pretty(&state)?;
+        tokio::fs::write(&self.state_file_path, json).await?;
+        
+        Ok(())
+    }
+    
+    /// Load emulator state from file
+    pub async fn load_state(&mut self) -> Result<(), EmulatorError> {
+        if !self.state_file_path.exists() {
+            // No state file exists, start with empty state
+            return Ok(());
+        }
+        
+        let json = tokio::fs::read_to_string(&self.state_file_path).await?;
+        let state: EmulatorState = serde_json::from_str(&json)?;
+        
+        // Set channel from saved state
+        self.current_channel = state.current_channel;
+        
+        // Recreate beacons from saved state
+        for beacon_data in state.beacons {
+            let virtual_channel = self.communication_space.get_or_create_channel(&self.current_channel);
+            
+            let mut virtual_beacon = VirtualBeacon::new(
+                beacon_data.id,
+                beacon_data.config,
+                beacon_data.position,
+                virtual_channel,
+            )?;
+            
+            // Set movement pattern
+            virtual_beacon.set_movement_pattern(beacon_data.movement_pattern)?;
+            
+            self.virtual_beacons.insert(beacon_data.id, virtual_beacon);
+            
+            // If beacon was intended to be running, start it
+            if beacon_data.intended_running {
+                if let Err(e) = self.start_beacon(beacon_data.id).await {
+                    eprintln!("Warning: Failed to restart beacon {}: {}", beacon_data.id, e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Clear all state and delete state file
+    pub async fn clear_state(&mut self) -> Result<(), EmulatorError> {
+        // Stop and remove all beacons
+        self.shutdown().await?;
+        
+        // Delete state file if it exists
+        if self.state_file_path.exists() {
+            tokio::fs::remove_file(&self.state_file_path).await?;
+        }
+        
+        Ok(())
+    }
+    
     /// Get statistics about the emulator manager
     pub fn get_manager_stats(&self) -> EmulatorManagerStats {
         let running_beacons = self.get_active_beacon_count();
@@ -382,7 +531,7 @@ impl EmulatorManager {
 }
 
 /// Statistics about the emulator manager
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmulatorManagerStats {
     pub total_beacons: usize,
     pub running_beacons: usize,

@@ -24,11 +24,17 @@ EXAMPLES:
     # Create a beacon with linear movement
     beacon-emulator create --lat 32.0 --lon 45.0 --movement linear:1.5:45
 
+    # Use a custom state file location
+    beacon-emulator --state-file /tmp/my_beacons.json list
+
     # Create a triangular test scenario with 3 beacons
     beacon-emulator scenario triangle --count 3 --spacing 100
 
-    # List all active beacons with detailed information
+    # List all beacons (shows intended state)
     beacon-emulator list --detailed
+
+    # Run daemon mode to actually transmit beacon signals
+    beacon-emulator daemon --auto-start
 
     # Monitor beacon activity in real-time
     beacon-emulator monitor --interval 2
@@ -47,6 +53,10 @@ pub struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, default_value = "info", help = "Logging verbosity level")]
     pub log_level: String,
+    
+    /// Path to the persistent state file
+    #[arg(long, help = "Custom path for the persistent state file (default: data/emulator_state.json)")]
+    pub state_file: Option<PathBuf>,
     
     #[command(subcommand)]
     pub command: EmulatorCommand,
@@ -414,6 +424,59 @@ EXAMPLES:
         /// Show detailed statistics
         #[arg(short, long, help = "Show detailed statistics")]
         detailed: bool,
+    },
+    
+    /// Clear all beacon state and start fresh
+    #[command(long_about = r#"
+Clear all beacon state and remove the persistent state file.
+
+This will stop and remove all beacons and delete the state file,
+effectively resetting the emulator to a clean state.
+
+EXAMPLES:
+    # Clear all state
+    beacon-emulator clear
+
+    # Clear state with confirmation
+    beacon-emulator clear --confirm
+"#)]
+    Clear {
+        /// Skip confirmation prompt
+        #[arg(short, long, help = "Skip confirmation prompt")]
+        confirm: bool,
+    },
+    
+    /// Run emulator in daemon mode to keep beacons running
+    #[command(long_about = r#"
+Run the emulator in daemon mode to keep beacons actively transmitting.
+
+In daemon mode, the emulator process stays running and maintains active
+beacon transmission tasks. This is required for beacons to actually
+transmit messages. Without daemon mode, beacons are only "intended" to
+run but don't actually transmit.
+
+EXAMPLES:
+    # Run daemon mode with default settings
+    beacon-emulator daemon
+
+    # Run daemon with custom update interval
+    beacon-emulator daemon --status-interval 10
+
+    # Run daemon and start all intended-running beacons
+    beacon-emulator daemon --auto-start
+"#)]
+    Daemon {
+        /// Status update interval in seconds
+        #[arg(long, default_value = "30", help = "Status update interval in seconds")]
+        status_interval: u64,
+        
+        /// Automatically start all beacons marked as intended-running
+        #[arg(long, help = "Auto-start all beacons marked as intended-running")]
+        auto_start: bool,
+        
+        /// Run in background (suppress status output)
+        #[arg(long, help = "Run in background mode with minimal output")]
+        background: bool,
     },
 }
 

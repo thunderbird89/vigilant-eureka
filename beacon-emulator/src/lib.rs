@@ -11,6 +11,8 @@ pub mod virtual_channel;
 pub mod movement;
 pub mod scenario;
 pub mod export;
+pub mod daemon_protocol;
+pub mod daemon_server;
 
 #[cfg(test)]
 pub mod test_data_models;

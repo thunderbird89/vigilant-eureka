@@ -123,17 +123,19 @@ pub struct EmergencyConfig {
     pub emergency_communication_timeout_s: u32,
     pub auto_shutdown_enabled: bool,
     pub emergency_message_count: u32,
+    pub shutdown_delay_s: u32,
 }
 
 impl Default for EmergencyConfig {
     fn default() -> Self {
         Self {
-            emergency_transmission_interval_ms: 30000, // 30 seconds
+            emergency_transmission_interval_ms: 5000, // 5 seconds
             emergency_power_threshold_percent: 5.0,
             emergency_gps_timeout_s: 300, // 5 minutes
             emergency_communication_timeout_s: 1800, // 30 minutes
             auto_shutdown_enabled: true,
             emergency_message_count: 10,
+            shutdown_delay_s: 30, // 30 seconds
         }
     }
 }
@@ -152,13 +154,23 @@ impl Default for BeaconConfig {
     }
 }
 
+/// Communication status information
+#[derive(Debug, Clone)]
+pub struct CommunicationStatus {
+    pub is_connected: bool,
+    pub signal_strength: Option<u8>,
+    pub last_successful_contact: Option<SystemTime>,
+}
+
 /// Beacon status information
 #[derive(Debug, Clone)]
 pub struct BeaconStatus {
     pub beacon_id: Uuid,
     pub operational_state: OperationalState,
     pub gps_status: GpsStatus,
+    pub current_position: Option<GpsPosition>,
     pub battery_status: BatteryStatus,
+    pub communication_status: CommunicationStatus,
     pub transmission_stats: CommTransmissionStats,
     pub uptime: Duration,
     pub last_error: Option<BeaconError>,
@@ -391,11 +403,21 @@ where
             .duration_since(self.start_time)
             .unwrap_or(Duration::from_secs(0));
         
+        let current_position = self.gps_manager.get_current_position();
+        
+        let communication_status = CommunicationStatus {
+            is_connected: self.communication_manager.is_connected(),
+            signal_strength: self.communication_manager.get_signal_strength(),
+            last_successful_contact: self.last_communication,
+        };
+        
         BeaconStatus {
             beacon_id: self.config.beacon_id,
             operational_state: self.operational_state.clone(),
             gps_status: self.gps_manager.get_status(),
+            current_position,
             battery_status,
+            communication_status,
             transmission_stats: self.get_transmission_stats(),
             uptime,
             last_error: None, // TODO: Track last error

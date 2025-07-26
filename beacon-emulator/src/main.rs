@@ -3,6 +3,7 @@ use beacon_emulator::{
     EmulatorManager, EmulatorError, MovementPattern, MovementPatternValidator,
     daemon_protocol::{DaemonCommand, DaemonResponse, is_daemon_running, send_daemon_command},
     daemon_server::DaemonServer,
+    monitor::{BeaconMonitor, MonitorConfig},
 };
 use clap::Parser;
 use shared_positioning::{GeodeticPosition, BeaconConfig};
@@ -590,100 +591,32 @@ async fn execute_monitor_command(
     compact: bool,
     show_messages: bool,
 ) -> Result<(), EmulatorError> {
-    println!("Monitoring beacon activity (Press Ctrl+C to exit)");
-    println!("Update interval: {}s", interval);
+    // Create monitor configuration from CLI arguments
+    let config = MonitorConfig::from_cli_args(beacon_id, interval, compact, show_messages);
     
-    if let Some(id) = beacon_id {
-        println!("Monitoring beacon: {}", id);
-    } else {
-        println!("Monitoring all beacons");
+    // Create enhanced beacon monitor
+    let mut monitor = BeaconMonitor::new(emulator)
+        .with_update_interval(Duration::from_secs(config.update_interval_secs))
+        .with_compact_mode(config.compact_mode)
+        .with_message_display(config.show_messages)
+        .with_health_indicators(config.show_health)
+        .with_position_history(config.show_position_history);
+    
+    // Apply beacon filter if specified
+    if let Some(beacon_id) = config.beacon_filter {
+        monitor = monitor.with_beacon_filter(beacon_id);
     }
     
-    println!("{}", "-".repeat(80));
-    
-    // Set up Ctrl+C handler
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
-        let _ = tx.send(()).await;
-    });
-    
-    let mut interval_timer = tokio::time::interval(Duration::from_secs(interval));
-    
-    loop {
-        tokio::select! {
-            _ = interval_timer.tick() => {
-                // Update display
-                print!("\x1B[2J\x1B[1;1H"); // Clear screen and move cursor to top
-                
-                let beacons = if let Some(id) = beacon_id {
-                    match emulator.get_beacon_status(id) {
-                        Ok(status) => vec![status],
-                        Err(_) => {
-                            println!("Beacon {} not found", id);
-                            break;
-                        }
-                    }
-                } else {
-                    emulator.list_beacons()
-                };
-                
-                if compact {
-                    print_compact_monitor(&beacons);
-                } else {
-                    print_detailed_monitor(&beacons, show_messages);
-                }
-                
-                io::stdout().flush().unwrap();
-            }
-            _ = rx.recv() => {
-                println!("\nMonitoring stopped.");
-                break;
-            }
-        }
+    // Apply channel filter if specified
+    if let Some(channel) = config.channel_filter {
+        monitor = monitor.with_channel_filter(channel);
     }
     
-    Ok(())
+    // Start monitoring
+    monitor.start_monitoring().await
 }
 
-fn print_compact_monitor(beacons: &[beacon_emulator::VirtualBeaconStatus]) {
-    println!("Beacon Monitor - {} beacons", beacons.len());
-    println!("{:<8} {:<36} {:<8} {:<10}", "Status", "ID", "Messages", "Last TX");
-    println!("{}", "-".repeat(70));
-    
-    for beacon in beacons {
-        let status = if beacon.is_running { "RUN" } else { "STOP" };
-        let last_tx = beacon.stats.last_transmission
-            .and_then(|t| t.elapsed().ok())
-            .map(|d| format!("{:.1}s", d.as_secs_f64()))
-            .unwrap_or_else(|| "Never".to_string());
-        
-        println!("{:<8} {:<36} {:<8} {:<10}", 
-                 status, beacon.id, beacon.stats.messages_sent, last_tx);
-    }
-}
 
-fn print_detailed_monitor(beacons: &[beacon_emulator::VirtualBeaconStatus], _show_messages: bool) {
-    println!("Detailed Beacon Monitor - {} beacons", beacons.len());
-    println!();
-    
-    for beacon in beacons {
-        println!("Beacon: {}", beacon.id);
-        println!("  Status: {}", if beacon.is_running { "Running" } else { "Stopped" });
-        println!("  Position: {:.6}, {:.6}, {:.1}m", 
-                 beacon.position.latitude, beacon.position.longitude, beacon.position.depth);
-        println!("  Movement: {}", beacon.movement_pattern);
-        println!("  Messages: {}", beacon.stats.messages_sent);
-        println!("  Interval: {}ms", beacon.config.transmission.interval_ms);
-        
-        if let Some(last_tx) = beacon.stats.last_transmission {
-            if let Ok(elapsed) = last_tx.elapsed() {
-                println!("  Last TX: {:.1}s ago", elapsed.as_secs_f64());
-            }
-        }
-        println!();
-    }
-}
 
 async fn execute_export_command(
     emulator: &EmulatorManager,

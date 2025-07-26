@@ -14,6 +14,7 @@ pub mod export;
 pub mod daemon_protocol;
 pub mod daemon_server;
 pub mod ipc_server;
+pub mod monitor;
 
 #[cfg(test)]
 pub mod test_data_models;
@@ -28,6 +29,7 @@ pub use movement::{MovementPattern, MovementCoordinateTransformer, MovementPatte
 pub use scenario::ScenarioType;
 pub use export::ExportFormat;
 pub use ipc_server::IpcServer;
+pub use monitor::{BeaconMonitor, MonitorConfig, BeaconHealthIndicator, HealthStatus};
 
 // Integration tests
 #[cfg(test)]

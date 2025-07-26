@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 use tokio::task::JoinHandle;
+use tokio::sync::RwLock;
 use serde::{Serialize, Deserialize};
 use shared_positioning::{
     BeaconConfig,
@@ -15,6 +17,7 @@ use crate::{
     ScenarioType,
     ExportFormat,
     MovementPattern,
+    IpcServer,
 };
 
 /// Persistent beacon data for saving/loading state
@@ -38,14 +41,15 @@ pub struct EmulatorState {
 pub struct EmulatorManager {
     virtual_beacons: HashMap<Uuid, VirtualBeacon>,
     beacon_tasks: HashMap<Uuid, JoinHandle<()>>,
-    communication_space: VirtualCommunicationSpace,
+    communication_space: Arc<RwLock<VirtualCommunicationSpace>>,
     current_channel: String,
     state_file_path: PathBuf,
+    ipc_server: Option<IpcServer>,
 }
 
 impl EmulatorManager {
     pub fn new(channel_name: &str) -> Self {
-        let communication_space = VirtualCommunicationSpace::new();
+        let communication_space = Arc::new(RwLock::new(VirtualCommunicationSpace::new()));
         let current_channel = channel_name.to_string();
         let state_file_path = Self::get_default_state_file_path();
         
@@ -55,6 +59,7 @@ impl EmulatorManager {
             communication_space,
             current_channel,
             state_file_path,
+            ipc_server: None,
         }
     }
     
@@ -98,7 +103,10 @@ impl EmulatorManager {
             BeaconConfig::new(beacon_id)
         });
         
-        let virtual_channel = self.communication_space.get_or_create_channel(&self.current_channel);
+        let virtual_channel = {
+            let mut comm_space = self.communication_space.write().await;
+            comm_space.get_or_create_channel(&self.current_channel)
+        };
         
         let virtual_beacon = VirtualBeacon::new(
             beacon_id,
@@ -362,7 +370,10 @@ impl EmulatorManager {
         let mut beacon_ids = Vec::new();
         
         // Get virtual channel for beacons
-        let virtual_channel = self.communication_space.get_or_create_channel(&self.current_channel);
+        let virtual_channel = {
+            let mut comm_space = self.communication_space.write().await;
+            comm_space.get_or_create_channel(&self.current_channel)
+        };
         
         // Create beacons at generated positions
         for (index, position) in positions.into_iter().enumerate() {
@@ -482,13 +493,8 @@ impl EmulatorManager {
     }
     
     /// Get communication space reference for advanced operations
-    pub fn get_communication_space(&self) -> &VirtualCommunicationSpace {
-        &self.communication_space
-    }
-    
-    /// Get mutable communication space reference for advanced operations
-    pub fn get_communication_space_mut(&mut self) -> &mut VirtualCommunicationSpace {
-        &mut self.communication_space
+    pub fn get_communication_space(&self) -> Arc<RwLock<VirtualCommunicationSpace>> {
+        self.communication_space.clone()
     }
     
     /// Save current emulator state to file
@@ -537,7 +543,10 @@ impl EmulatorManager {
         
         // Recreate beacons from saved state
         for beacon_data in state.beacons {
-            let virtual_channel = self.communication_space.get_or_create_channel(&self.current_channel);
+            let virtual_channel = {
+                let mut comm_space = self.communication_space.write().await;
+                comm_space.get_or_create_channel(&self.current_channel)
+            };
             
             let mut virtual_beacon = VirtualBeacon::new(
                 beacon_data.id,
@@ -576,10 +585,13 @@ impl EmulatorManager {
     }
     
     /// Get statistics about the emulator manager
-    pub fn get_manager_stats(&self) -> EmulatorManagerStats {
+    pub async fn get_manager_stats(&self) -> EmulatorManagerStats {
         let running_beacons = self.get_active_beacon_count();
         let total_beacons = self.get_total_beacon_count();
-        let channels = self.communication_space.list_channels();
+        let channels = {
+            let comm_space = self.communication_space.read().await;
+            comm_space.list_channels()
+        };
         
         EmulatorManagerStats {
             total_beacons,
@@ -588,6 +600,63 @@ impl EmulatorManager {
             active_channels: channels.len(),
             current_channel: self.current_channel.clone(),
             channel_names: channels,
+        }
+    }
+    
+    /// Start the IPC server for cross-platform communication
+    pub async fn start_ipc_server(&mut self, port: Option<u16>) -> Result<(), EmulatorError> {
+        if self.ipc_server.is_some() {
+            return Err(EmulatorError::ConfigError("IPC server is already running".to_string()));
+        }
+        
+        // Create IPC server with shared communication space
+        let mut ipc_server = IpcServer::new_with_shared_communication_space(
+            port, 
+            self.communication_space.clone()
+        );
+        
+        // Start the IPC server
+        ipc_server.start().await?;
+        
+        println!("IPC server started on port {}", ipc_server.port());
+        self.ipc_server = Some(ipc_server);
+        
+        Ok(())
+    }
+    
+    /// Stop the IPC server
+    pub async fn stop_ipc_server(&mut self) -> Result<(), EmulatorError> {
+        if let Some(ipc_server) = self.ipc_server.take() {
+            ipc_server.shutdown().await?;
+            println!("IPC server stopped");
+        }
+        Ok(())
+    }
+    
+    /// Check if IPC server is running
+    pub fn is_ipc_server_running(&self) -> bool {
+        self.ipc_server.is_some()
+    }
+    
+    /// Get IPC server port (if running)
+    pub fn get_ipc_server_port(&self) -> Option<u16> {
+        self.ipc_server.as_ref().map(|server| server.port())
+    }
+    
+    /// Synchronize communication spaces between emulator and IPC server
+    async fn sync_communication_spaces(&mut self) {
+        if let Some(ipc_server) = &self.ipc_server {
+            let server_comm_space = ipc_server.get_communication_space();
+            let mut server_space = server_comm_space.write().await;
+            
+            // Ensure all channels exist in both spaces
+            let channel_names = {
+                let comm_space = self.communication_space.read().await;
+                comm_space.list_channels()
+            };
+            for channel_name in channel_names {
+                server_space.get_or_create_channel(&channel_name);
+            }
         }
     }
 }
@@ -859,7 +928,7 @@ mod tests {
         let position = create_test_position();
         
         // Initial stats
-        let stats = manager.get_manager_stats();
+        let stats = manager.get_manager_stats().await;
         assert_eq!(stats.total_beacons, 0);
         assert_eq!(stats.running_beacons, 0);
         assert_eq!(stats.stopped_beacons, 0);
@@ -871,7 +940,7 @@ mod tests {
         
         manager.start_beacon(beacon1).await.unwrap();
         
-        let stats = manager.get_manager_stats();
+        let stats = manager.get_manager_stats().await;
         assert_eq!(stats.total_beacons, 2);
         assert_eq!(stats.running_beacons, 1);
         assert_eq!(stats.stopped_beacons, 1);
@@ -908,8 +977,11 @@ mod tests {
         manager.start_beacon(beacon_id).await.unwrap();
         
         // Get channel to subscribe to messages after beacon is created
-        let channel = manager.get_communication_space_mut()
-            .get_or_create_channel("test_channel");
+        let comm_space_arc = manager.get_communication_space();
+        let channel = {
+            let mut comm_space = comm_space_arc.write().await;
+            comm_space.get_or_create_channel("test_channel")
+        };
         let mut receiver = channel.subscribe();
         
         // Wait for message transmission

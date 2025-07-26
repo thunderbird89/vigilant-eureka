@@ -12,10 +12,10 @@ use shared_positioning::{
 use crate::{
     EmulatorError, 
     VirtualChannel, 
-    VirtualMessage,
     MovementPattern,
     movement::{MovementCoordinateTransformer, MovementPatternValidator}
 };
+use shared_positioning::VirtualMessage;
 
 /// Control messages for beacon lifecycle management
 #[derive(Debug)]
@@ -267,9 +267,12 @@ impl VirtualBeacon {
                             stats.messages_sent += 1;
                             stats.last_transmission = Some(SystemTime::now());
                             sequence_number = sequence_number.wrapping_add(1);
+                            println!("🔊 Beacon {}: Transmitted message #{} to channel '{}'", 
+                                     id, stats.messages_sent, virtual_channel.name());
                         }
-                        Err(_) => {
+                        Err(e) => {
                             stats.transmission_failures += 1;
+                            eprintln!("❌ Beacon {}: Transmission failed: {}", id, e);
                         }
                     }
                 }

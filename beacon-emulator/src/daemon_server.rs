@@ -210,7 +210,7 @@ impl DaemonServer {
             }
             
             DaemonCommand::GetStatus { detailed: _ } => {
-                let stats = emulator.get_manager_stats();
+                let stats = emulator.get_manager_stats().await;
                 DaemonResponse::Status { stats }
             }
             

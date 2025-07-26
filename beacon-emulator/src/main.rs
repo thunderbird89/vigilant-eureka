@@ -745,7 +745,7 @@ async fn execute_status_command(
     emulator: &EmulatorManager,
     detailed: bool,
 ) -> Result<(), EmulatorError> {
-    let stats = emulator.get_manager_stats();
+    let stats = emulator.get_manager_stats().await;
     
     println!("Beacon Emulator Status");
     println!("=====================");
@@ -962,6 +962,13 @@ async fn execute_daemon_command(
         println!("{}", "-".repeat(50));
     }
     
+    // Start IPC server for virtual receiver connections
+    if let Err(e) = emulator.start_ipc_server(None).await {
+        warn!("Failed to start IPC server: {}", e);
+    } else if !background {
+        println!("IPC server started on port {}", emulator.get_ipc_server_port().unwrap_or(8765));
+    }
+    
     // Auto-start beacons if requested
     if auto_start {
         let started = emulator.start_all_beacons().await?;
@@ -1044,7 +1051,7 @@ async fn display_live_dashboard(emulator_arc: &std::sync::Arc<tokio::sync::Mutex
     println!("├─────────────────────────────────────────────────────────────────────────────────┤");
     
     // Status line
-    let stats = emulator.get_manager_stats();
+    let stats = emulator.get_manager_stats().await;
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     println!("│ Status: RUNNING │ Time: {} │ Channel: {} │", timestamp, stats.current_channel);
     println!("│ Socket: {} │", beacon_emulator::daemon_protocol::get_socket_path().display());

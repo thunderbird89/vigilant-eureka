@@ -58,6 +58,10 @@ pub struct Cli {
     #[arg(long, help = "Custom path for the persistent state file (default: data/emulator_state.json)")]
     pub state_file: Option<PathBuf>,
     
+    /// IPC server port for virtual receiver connections
+    #[arg(long, default_value = "8765", help = "Port for IPC server (for virtual receiver connections)")]
+    pub ipc_port: u16,
+    
     #[command(subcommand)]
     pub command: EmulatorCommand,
 }

@@ -21,6 +21,7 @@ pub mod graceful_degradation;
 pub mod coordinate_system_demo;
 pub mod virtual_transceiver;
 pub mod virtual_receiver_demo;
+pub mod ipc_client;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -844,17 +845,27 @@ pub async fn run_virtual_receiver(
     
     let update_duration = std::time::Duration::from_secs(update_interval);
     let mut last_update = std::time::Instant::now();
+    let mut last_status_log = std::time::Instant::now();
     
     loop {
         // Check for new messages
         match transceiver.read_message() {
             Ok(Some(raw_message)) => {
-                println!("Received message from beacon (signal: {})", 
-                         raw_message.signal_strength.unwrap_or(0));
+                println!("\n🎯 MESSAGE PROCESSING:");
+                println!("   Signal Strength: {}/255", raw_message.signal_strength.unwrap_or(0));
+                println!("   Message Length: {} bytes", raw_message.data.len());
+                println!("   Transceiver ID: {}", raw_message.transceiver_id);
                 
                 // Parse the message
                 match message_parser.parse_message(&raw_message) {
                     Ok(parsed_message) => {
+                        println!("✅ MESSAGE PARSED SUCCESSFULLY:");
+                        println!("   Anchor ID: {}", parsed_message.anchor_id);
+                        println!("   Sequence: {}", parsed_message.message_sequence);
+                        println!("   Message Version: {:?}", parsed_message.message_version);
+                        println!("   Parsed Position: lat={:.6}°, lon={:.6}°, depth={:.2}m", 
+                                 parsed_message.position.latitude, parsed_message.position.longitude, parsed_message.position.depth);
+                        
                         // Convert to Anchor format for trilateration
                         let anchor = Anchor {
                             id: parsed_message.anchor_id.to_string(),
@@ -867,7 +878,7 @@ pub async fn run_virtual_receiver(
                         };
                         
                         // Add to anchor list (keep only recent messages)
-                        anchor_messages.push(anchor);
+                        anchor_messages.push(anchor.clone());
                         
                         // Keep only messages from last 10 seconds
                         let current_time = std::time::SystemTime::now()
@@ -875,17 +886,30 @@ pub async fn run_virtual_receiver(
                             .unwrap()
                             .as_millis() as u64;
                         
+                        let before_cleanup = anchor_messages.len();
                         anchor_messages.retain(|a| current_time - a.timestamp < 10000);
+                        let after_cleanup = anchor_messages.len();
                         
-                        println!("Active anchors: {}", anchor_messages.len());
+                        if before_cleanup != after_cleanup {
+                            println!("🧹 Cleaned up {} old anchor messages", before_cleanup - after_cleanup);
+                        }
+                        
+                        println!("📊 ANCHOR STATUS:");
+                        println!("   Active anchors: {}", anchor_messages.len());
+                        for (i, anchor) in anchor_messages.iter().enumerate() {
+                            let age_ms = current_time - anchor.timestamp;
+                            println!("   [{}] ID: {}, Age: {}ms, Pos: ({:.6}, {:.6}, {:.2})", 
+                                     i+1, anchor.id, age_ms, anchor.position.lat, anchor.position.lon, anchor.position.depth);
+                        }
                     }
                     Err(e) => {
-                        eprintln!("Failed to parse message: {}", e);
+                        eprintln!("❌ FAILED TO PARSE MESSAGE: {}", e);
+                        eprintln!("   Raw data: {:02X?}", &raw_message.data[..std::cmp::min(32, raw_message.data.len())]);
                     }
                 }
             }
             Ok(None) => {
-                // No message available, continue
+                // No message available - this is normal, don't spam logs
             }
             Err(e) => {
                 eprintln!("Error reading message: {}", e);
@@ -895,32 +919,81 @@ pub async fn run_virtual_receiver(
         
         // Attempt positioning if we have enough anchors and enough time has passed
         if anchor_messages.len() >= 3 && last_update.elapsed() >= update_duration {
+            println!("\n🧮 ATTEMPTING POSITION CALCULATION:");
+            println!("   Available anchors: {}", anchor_messages.len());
+            println!("   Time since last update: {:.1}s", last_update.elapsed().as_secs_f64());
+            
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
             
+            println!("   Current timestamp: {} ms", current_time);
+            
             match trilaterate(&anchor_messages, current_time) {
                 Ok((geodetic_pos, local_pos)) => {
-                    println!("\n=== POSITION UPDATE {} ===", positioning_attempts + 1);
-                    println!("Local position (ENU): east={:.2}m, north={:.2}m, down={:.2}m", 
-                             local_pos.x, local_pos.y, local_pos.z);
-                    println!("Geodetic position: lat={:.6}°, lon={:.6}°, depth={:.2}m", 
-                             geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth);
-                    println!("Used {} anchors for positioning", anchor_messages.len());
+                    println!("\n🎯 === POSITION COMPUTED SUCCESSFULLY (Attempt {}) ===", positioning_attempts + 1);
+                    println!("📍 LOCAL POSITION (ENU Coordinates):");
+                    println!("   East:  {:.3} meters", local_pos.x);
+                    println!("   North: {:.3} meters", local_pos.y);
+                    println!("   Down:  {:.3} meters", local_pos.z);
+                    println!("🌍 GEODETIC POSITION (WGS84):");
+                    println!("   Latitude:  {:.8}°", geodetic_pos.lat);
+                    println!("   Longitude: {:.8}°", geodetic_pos.lon);
+                    println!("   Depth:     {:.3} meters", geodetic_pos.depth);
+                    println!("📊 COMPUTATION DETAILS:");
+                    println!("   Anchors used: {}", anchor_messages.len());
+                    println!("   Computation time: {} ms", current_time);
+                    
+                    // Calculate distances to each anchor for verification
+                    println!("📏 DISTANCES TO ANCHORS:");
+                    for anchor in &anchor_messages {
+                        let dx = (geodetic_pos.lat - anchor.position.lat) * 111320.0; // Rough conversion to meters
+                        let dy = (geodetic_pos.lon - anchor.position.lon) * 111320.0 * geodetic_pos.lat.to_radians().cos();
+                        let dz = geodetic_pos.depth - anchor.position.depth;
+                        let distance = (dx*dx + dy*dy + dz*dz).sqrt();
+                        println!("   To anchor {}: {:.2} meters", anchor.id, distance);
+                    }
                     
                     positioning_attempts += 1;
                     if positioning_attempts >= max_attempts {
-                        println!("Reached maximum positioning attempts ({}), stopping.", max_attempts);
+                        println!("\n🏁 Reached maximum positioning attempts ({}), stopping.", max_attempts);
                         break;
                     }
                 }
                 Err(e) => {
-                    println!("Positioning failed: {}", e);
+                    println!("\n❌ POSITIONING FAILED:");
+                    println!("   Error: {}", e);
+                    println!("   Available anchors: {}", anchor_messages.len());
+                    println!("   This might be due to:");
+                    println!("   - Insufficient anchor coverage");
+                    println!("   - Poor anchor geometry");
+                    println!("   - Timing synchronization issues");
+                    println!("   - Message parsing errors");
                 }
             }
             
             last_update = std::time::Instant::now();
+        } else if anchor_messages.len() < 3 {
+            // Show waiting status periodically
+            if positioning_attempts == 0 || last_update.elapsed().as_secs() >= 5 {
+                println!("\n⏳ WAITING FOR MORE ANCHORS:");
+                println!("   Current: {} anchors (need at least 3)", anchor_messages.len());
+                println!("   Time waiting: {:.1}s", last_update.elapsed().as_secs_f64());
+                if positioning_attempts == 0 {
+                    last_update = std::time::Instant::now(); // Reset timer for first status
+                }
+            }
+        }
+        
+        // Periodic status update
+        if last_status_log.elapsed().as_secs() >= 15 {
+            println!("\n📊 PERIODIC STATUS UPDATE:");
+            println!("   Runtime: {:.1}s", last_status_log.elapsed().as_secs_f64());
+            println!("   Active anchors: {}", anchor_messages.len());
+            println!("   Positioning attempts: {}", positioning_attempts);
+            println!("   Connection status: {}", if transceiver.is_connected() { "Connected ✅" } else { "Disconnected ❌" });
+            last_status_log = std::time::Instant::now();
         }
         
         // Small delay to prevent busy waiting

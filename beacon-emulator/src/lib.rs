@@ -13,6 +13,7 @@ pub mod scenario;
 pub mod export;
 pub mod daemon_protocol;
 pub mod daemon_server;
+pub mod ipc_server;
 
 #[cfg(test)]
 pub mod test_data_models;
@@ -21,10 +22,12 @@ pub mod test_data_models;
 pub use error::EmulatorError;
 pub use emulator::{EmulatorManager, EmulatorManagerStats};
 pub use virtual_beacon::{VirtualBeacon, VirtualBeaconStatus, VirtualBeaconStats};
-pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualMessage, VirtualChannelStats};
+pub use virtual_channel::{VirtualCommunicationSpace, VirtualChannel, VirtualChannelStats};
+pub use shared_positioning::VirtualMessage;
 pub use movement::{MovementPattern, MovementCoordinateTransformer, MovementPatternValidator};
 pub use scenario::ScenarioType;
 pub use export::ExportFormat;
+pub use ipc_server::IpcServer;
 
 // Integration tests
 #[cfg(test)]

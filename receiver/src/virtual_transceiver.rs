@@ -6,12 +6,14 @@ use tokio::sync::broadcast;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use crate::ipc_client::IpcClient;
+use shared_positioning::VirtualMessage as IpcVirtualMessage;
 
 /// Virtual transceiver that connects to beacon emulator's virtual communication space
 pub struct VirtualTransceiver {
     base: BaseTransceiver,
     channel_name: String,
-    receiver: Option<broadcast::Receiver<VirtualMessage>>,
+    ipc_client: Option<IpcClient>,
     is_connected: bool,
 }
 
@@ -57,7 +59,7 @@ impl VirtualTransceiver {
         Self {
             base: BaseTransceiver::new(id),
             channel_name,
-            receiver: None,
+            ipc_client: None,
             is_connected: false,
         }
     }
@@ -68,31 +70,40 @@ impl VirtualTransceiver {
             return Ok(());
         }
         
-        // For now, we'll use a simple file-based communication mechanism
-        // This can be extended later to use proper IPC mechanisms like named pipes,
-        // shared memory, or network sockets
+        // Create IPC client and connect to beacon emulator
+        let mut ipc_client = IpcClient::new(None, None); // Use default host and port
         
-        // Try to connect to the virtual channel by checking for a channel file
-        let channel_file = format!("/tmp/beacon_emulator_channel_{}", self.channel_name);
-        
-        // For this implementation, we'll create a mock receiver that can be extended
-        // to read from the actual virtual channel
-        let (sender, receiver) = broadcast::channel(1000);
-        self.receiver = Some(receiver);
-        self.is_connected = true;
-        
-        self.base.update_status(true, Some(200));
-        
-        println!("Virtual transceiver {} connected to channel '{}' (mock mode)", self.base.id, self.channel_name);
-        println!("Note: This is a mock implementation. In a full implementation, this would");
-        println!("      connect to the beacon emulator's virtual communication space.");
-        
-        Ok(())
+        match ipc_client.connect().await {
+            Ok(()) => {
+                // Subscribe to the virtual channel
+                match ipc_client.subscribe(&self.channel_name, self.base.id).await {
+                    Ok(()) => {
+                        self.ipc_client = Some(ipc_client);
+                        self.is_connected = true;
+                        self.base.update_status(true, Some(200));
+                        
+                        println!("✅ Virtual transceiver {} connected to channel '{}'", self.base.id, self.channel_name);
+                        println!("🔗 IPC connection established, ready to receive beacon messages");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        Err(CommError::ConnectionFailed(format!("Failed to subscribe to channel '{}': {}", self.channel_name, e)))
+                    }
+                }
+            }
+            Err(e) => {
+                Err(CommError::ConnectionFailed(format!("Failed to connect to IPC server: {}", e)))
+            }
+        }
     }
     
     /// Disconnect from the virtual communication channel
-    pub fn disconnect(&mut self) {
-        self.receiver = None;
+    pub async fn disconnect(&mut self) {
+        if let Some(mut ipc_client) = self.ipc_client.take() {
+            let _ = ipc_client.unsubscribe(&self.channel_name, self.base.id).await;
+            ipc_client.disconnect().await;
+        }
+        
         self.is_connected = false;
         self.base.update_status(false, None);
         
@@ -104,12 +115,22 @@ impl VirtualTransceiver {
         &self.channel_name
     }
     
-    /// Convert virtual message to raw message format expected by receiver
-    fn convert_virtual_to_raw(&mut self, virtual_msg: VirtualMessage) -> RawMessage {
+    /// Convert IPC virtual message to raw message format expected by receiver
+    fn convert_ipc_virtual_to_raw(&mut self, virtual_msg: IpcVirtualMessage) -> RawMessage {
         let timestamp_ms = virtual_msg.timestamp
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+        
+        // Log detailed message information
+        println!("📡 BEACON MESSAGE RECEIVED:");
+        println!("   Beacon ID: {}", virtual_msg.beacon_id);
+        println!("   Position: lat={:.6}°, lon={:.6}°, depth={:.2}m", 
+                 virtual_msg.position.latitude, virtual_msg.position.longitude, virtual_msg.position.depth);
+        println!("   Signal Quality: {}/255", virtual_msg.signal_quality);
+        println!("   Message Size: {} bytes", virtual_msg.message_data.len());
+        println!("   Timestamp: {} ms", timestamp_ms);
+        println!("   Raw Data: {:02X?}", &virtual_msg.message_data[..std::cmp::min(16, virtual_msg.message_data.len())]);
         
         self.base.stats.record_message_received(virtual_msg.message_data.len());
         self.base.status.last_message_time = Some(Instant::now());
@@ -129,28 +150,14 @@ impl TransceiverInterface for VirtualTransceiver {
             return Err(CommError::NotConnected);
         }
         
-        if let Some(receiver) = &mut self.receiver {
+        if let Some(ipc_client) = &mut self.ipc_client {
             // Try to receive a message without blocking
-            match receiver.try_recv() {
-                Ok(virtual_msg) => {
-                    let raw_msg = self.convert_virtual_to_raw(virtual_msg);
-                    Ok(Some(raw_msg))
-                }
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    // No messages available
-                    Ok(None)
-                }
-                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    // Receiver lagged behind, some messages were dropped
-                    eprintln!("Warning: Virtual transceiver {} lagged, {} messages skipped", 
-                             self.base.id, skipped);
-                    Ok(None)
-                }
-                Err(broadcast::error::TryRecvError::Closed) => {
-                    // Channel closed
-                    self.disconnect();
-                    Err(CommError::ConnectionFailed("Virtual channel closed".to_string()))
-                }
+            if let Some(virtual_msg) = ipc_client.try_recv_message() {
+                let raw_msg = self.convert_ipc_virtual_to_raw(virtual_msg);
+                Ok(Some(raw_msg))
+            } else {
+                // No messages available
+                Ok(None)
             }
         } else {
             Err(CommError::NotConnected)
@@ -223,7 +230,12 @@ impl TransceiverInterface for VirtualTransceiver {
     }
     
     fn reset(&mut self) -> Result<(), CommError> {
-        self.disconnect();
+        // Disconnect first
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.disconnect().await;
+            })
+        });
         
         // Simulate reset delay
         std::thread::sleep(Duration::from_millis(100));
@@ -241,9 +253,9 @@ impl TransceiverInterface for VirtualTransceiver {
     }
     
     fn flush_buffers(&mut self) -> Result<(), CommError> {
-        if let Some(receiver) = &mut self.receiver {
+        if let Some(ipc_client) = &mut self.ipc_client {
             // Drain all pending messages
-            while let Ok(_) = receiver.try_recv() {
+            while let Some(_) = ipc_client.try_recv_message() {
                 // Discard messages
             }
         }

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     TransceiverInterface, MessageBuilder, GeodeticPosition,
-    EnvironmentalConditions, PowerManager
+    EnvironmentalConditions, PowerManager, SeaState
 };
 
 /// Transmission manager errors
@@ -584,6 +584,105 @@ where
     pub fn update_environmental_conditions(&mut self, conditions: EnvironmentalConditions) {
         self.environmental_conditions = conditions;
     }
+
+    /// Adjust transmission frequency for rough sea conditions (requirement 6.1, 6.4)
+    pub fn adjust_transmission_frequency_for_sea_conditions(&mut self, sea_state: &SeaState) -> Result<(), TransmissionError> {
+        let new_interval = match sea_state {
+            SeaState::Calm | SeaState::Smooth => self.config.default_interval_ms,
+            SeaState::Slight => self.config.default_interval_ms + 1000, // Slight delay
+            SeaState::Moderate => self.config.default_interval_ms + 2000, // Moderate delay
+            SeaState::Rough => self.config.default_interval_ms + 5000, // Significant delay
+            SeaState::VeryRough => self.config.default_interval_ms + 10000, // Large delay
+            SeaState::High | SeaState::VeryHigh => self.config.default_interval_ms + 20000, // Very large delay
+            SeaState::Phenomenal => self.config.default_interval_ms + 30000, // Maximum delay
+        };
+
+        // Update configuration temporarily for rough sea conditions
+        let mut temp_config = self.config.clone();
+        temp_config.default_interval_ms = new_interval;
+        self.update_config(temp_config)?;
+
+        self.statistics.record_environmental_adaptation();
+        Ok(())
+    }
+
+    /// Adjust transmission power for environmental conditions with enhanced logic
+    pub fn adjust_transmission_power_for_conditions(&mut self, wave_height_m: Option<f32>, noise_level_db: Option<f32>, temperature_c: Option<f32>) -> Result<(), TransmissionError> {
+        let mut power_adjustment = 0i16;
+
+        // Adjust for wave conditions
+        if let Some(wave_height) = wave_height_m {
+            power_adjustment += match wave_height {
+                h if h <= 1.0 => 0,
+                h if h <= 2.5 => 10,
+                h if h <= 4.0 => 25,
+                h if h <= 6.0 => 40,
+                h if h <= 9.0 => 60,
+                _ => 80,
+            };
+        }
+
+        // Adjust for noise conditions
+        if let Some(noise) = noise_level_db {
+            power_adjustment += match noise {
+                n if n <= 60.0 => -10, // Quiet conditions, can reduce power
+                n if n <= 80.0 => 0,   // Normal conditions
+                n if n <= 100.0 => 15, // Noisy conditions, increase power
+                _ => 30,               // Very noisy, significant increase
+            };
+        }
+
+        // Adjust for temperature (affects electronics performance)
+        if let Some(temp) = temperature_c {
+            power_adjustment += match temp {
+                t if t <= 0.0 => 10,   // Cold conditions may need more power
+                t if t <= 40.0 => 0,   // Normal temperature range
+                t if t <= 60.0 => -5,  // Hot conditions, reduce to prevent overheating
+                _ => -15,              // Very hot, significant reduction
+            };
+        }
+
+        // Apply power adjustment within bounds
+        let new_power = ((self.current_power_level as i16) + power_adjustment)
+            .max(self.config.min_power_level as i16)
+            .min(self.config.max_power_level as i16) as u8;
+
+        if new_power != self.current_power_level {
+            self.set_power_level(new_power)?;
+            self.statistics.record_environmental_adaptation();
+        }
+
+        Ok(())
+    }
+
+    /// Schedule transmission with environmental timing adjustment
+    pub fn schedule_transmission_with_environmental_timing(
+        &mut self,
+        beacon_id: Uuid,
+        position: GeodeticPosition,
+        signal_quality: u8,
+        message_version: MessageVersion,
+        priority: TransmissionPriority,
+        environmental_delay_ms: Option<u32>,
+    ) -> Result<Uuid, TransmissionError> {
+        let base_delay = match priority {
+            TransmissionPriority::Emergency => 0,
+            TransmissionPriority::High => 100,
+            TransmissionPriority::Normal => 500,
+            TransmissionPriority::Low => 1000,
+        };
+
+        let total_delay = base_delay + environmental_delay_ms.unwrap_or(0);
+
+        self.schedule_transmission(
+            beacon_id,
+            position,
+            signal_quality,
+            message_version,
+            priority,
+            Some(total_delay),
+        )
+    }
     
     /// Get next sequence number
     fn get_next_sequence(&mut self) -> u16 {
@@ -765,5 +864,47 @@ mod tests {
         
         // Power level should be reduced
         assert!(manager.get_current_power_level() < 128);
+    }
+
+    #[test]
+    fn test_rough_sea_transmission_adjustment() {
+        let config = TransmissionConfig::default();
+        let mut transceiver = MockTransceiver::new(1);
+        transceiver.configure(crate::TransceiverConfig::default()).unwrap();
+        let power_manager = MockPowerManager::new();
+        
+        let mut manager = TransmissionManager::new(config, transceiver, power_manager).unwrap();
+        manager.start().unwrap();
+        
+        // Test rough sea condition adjustment
+        let result = manager.adjust_transmission_frequency_for_sea_conditions(&SeaState::Rough);
+        assert!(result.is_ok());
+        
+        // Transmission interval should be increased for rough seas
+        assert!(manager.get_config().default_interval_ms > 5000);
+    }
+
+    #[test]
+    fn test_environmental_power_adjustment() {
+        let config = TransmissionConfig::default();
+        let mut transceiver = MockTransceiver::new(1);
+        transceiver.configure(crate::TransceiverConfig::default()).unwrap();
+        let power_manager = MockPowerManager::new();
+        
+        let mut manager = TransmissionManager::new(config, transceiver, power_manager).unwrap();
+        manager.start().unwrap();
+        
+        let initial_power = manager.get_current_power_level();
+        
+        // Test power adjustment for high waves and noise
+        let result = manager.adjust_transmission_power_for_conditions(
+            Some(5.0), // High waves
+            Some(90.0), // High noise
+            Some(25.0), // Normal temperature
+        );
+        assert!(result.is_ok());
+        
+        // Power should be increased for difficult conditions
+        assert!(manager.get_current_power_level() > initial_power);
     }
 }

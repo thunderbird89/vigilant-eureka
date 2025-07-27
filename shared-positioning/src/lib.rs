@@ -85,7 +85,7 @@ pub use beacon_config::{
 pub use environmental_monitor::{
     EnvironmentalMonitor, ExtendedEnvironmentalConditions, EnvironmentalThresholds,
     EnvironmentalError, AdaptationAction, EnvironmentalStats, MeasurementQuality,
-    CalibrationStatus, ExtremeSeverity
+    CalibrationStatus, ExtremeSeverity, SeaState, EnvironmentalDataPoint
 };
 pub use hardware_monitor::{
     HardwareMonitor, HardwareMonitorConfig, HardwareMonitorStats, DiagnosticResult,

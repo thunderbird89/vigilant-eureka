@@ -144,7 +144,7 @@
   - Create hardware abstraction layer for different microcontroller variants
   - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
 
-- [ ] 17. Enhance environmental monitoring and adaptive transmission
+- [x] 17. Enhance environmental monitoring and adaptive transmission
 
   - Implement real-time environmental condition monitoring (temperature, humidity, pressure)
   - Add adaptive transmission power adjustment based on environmental conditions

@@ -639,50 +639,33 @@ async fn execute_export_command(
     duration: u64,
     all_time: bool,
     beacon_id: Option<Uuid>,
-    _include_messages: bool,
+    include_messages: bool,
 ) -> Result<(), EmulatorError> {
-    let _actual_duration = if all_time { u64::MAX } else { duration };
+    println!("Exporting beacon data to {} (format: {})...", output.display(), format);
     
-    // For now, just export beacon status since log export is not yet implemented
-    let beacons = if let Some(id) = beacon_id {
-        vec![emulator.get_beacon_status(id)?]
-    } else {
-        emulator.list_beacons()
-    };
+    let exported_count = emulator.export_logs(
+        &output,
+        format,
+        duration,
+        all_time,
+        beacon_id,
+        include_messages,
+    ).await?;
     
-    match format {
-        beacon_emulator::ExportFormat::Json => {
-            let json = serde_json::to_string_pretty(&beacons)?;
-            tokio::fs::write(&output, json).await?;
-        }
-        beacon_emulator::ExportFormat::Csv => {
-            let mut csv_content = String::new();
-            csv_content.push_str("id,status,latitude,longitude,depth,movement,messages_sent,interval_ms\n");
-            
-            for beacon in &beacons {
-                csv_content.push_str(&format!(
-                    "{},{},{},{},{},{},{},{}\n",
-                    beacon.id,
-                    if beacon.is_running { "running" } else { "stopped" },
-                    beacon.position.latitude,
-                    beacon.position.longitude,
-                    beacon.position.depth,
-                    beacon.movement_pattern,
-                    beacon.stats.messages_sent,
-                    beacon.config.transmission.interval_ms
-                ));
-            }
-            
-            tokio::fs::write(&output, csv_content).await?;
-        }
+    println!("Successfully exported {} log entries to {}", exported_count, output.display());
+    
+    if let Some(id) = beacon_id {
+        println!("Filtered by beacon: {}", id);
     }
     
-    println!("Exported {} beacon(s) to {} (format: {})", 
-             beacons.len(), output.display(), format);
+    if all_time {
+        println!("Exported all available data");
+    } else {
+        println!("Exported data from the last {} seconds", duration);
+    }
     
-    if !all_time {
-        println!("Note: Full log export with message history not yet implemented.");
-        println!("Currently exporting beacon status only.");
+    if include_messages {
+        println!("Included full message content in export");
     }
     
     Ok(())

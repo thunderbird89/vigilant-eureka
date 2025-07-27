@@ -13,6 +13,9 @@ use crate::{
     EmulatorError, 
     VirtualChannel, 
     MovementPattern,
+    BeaconLogger,
+    LogEntryType,
+    LogMetadata,
     movement::{MovementCoordinateTransformer, MovementPatternValidator}
 };
 use shared_positioning::VirtualMessage;
@@ -40,6 +43,8 @@ pub struct VirtualBeacon {
     message_builder: MessageBuilder,
     start_time: Option<SystemTime>,
     control_tx: Option<mpsc::UnboundedSender<BeaconControl>>,
+    logger: std::sync::Arc<BeaconLogger>,
+    channel_name: String,
 }
 
 impl VirtualBeacon {
@@ -49,6 +54,7 @@ impl VirtualBeacon {
         initial_position: GeodeticPosition,
         virtual_channel: VirtualChannel,
     ) -> Result<Self, EmulatorError> {
+        let channel_name = virtual_channel.name().to_string();
         Ok(Self {
             id,
             config,
@@ -62,6 +68,35 @@ impl VirtualBeacon {
             message_builder: MessageBuilder::new(),
             start_time: None,
             control_tx: None,
+            logger: std::sync::Arc::new(BeaconLogger::new()),
+            channel_name,
+        })
+    }
+    
+    /// Create a new virtual beacon with a shared logger
+    pub fn new_with_logger(
+        id: Uuid,
+        config: BeaconConfig,
+        initial_position: GeodeticPosition,
+        virtual_channel: VirtualChannel,
+        logger: std::sync::Arc<BeaconLogger>,
+    ) -> Result<Self, EmulatorError> {
+        let channel_name = virtual_channel.name().to_string();
+        Ok(Self {
+            id,
+            config,
+            position: initial_position,
+            initial_position,
+            movement_pattern: MovementPattern::Stationary,
+            sequence_number: 0,
+            is_running: false,
+            virtual_channel,
+            stats: VirtualBeaconStats::new(),
+            message_builder: MessageBuilder::new(),
+            start_time: None,
+            control_tx: None,
+            logger,
+            channel_name,
         })
     }
     
@@ -121,6 +156,8 @@ impl VirtualBeacon {
         let message_builder = MessageBuilder::new();
         let sequence_number = self.sequence_number;
         let stats = self.stats.clone();
+        let logger = self.logger.clone();
+        let channel_name = self.channel_name.clone();
         
         // Spawn the transmission task
         let task_handle = tokio::spawn(async move {
@@ -135,6 +172,8 @@ impl VirtualBeacon {
                 sequence_number,
                 stats,
                 control_rx,
+                logger,
+                channel_name,
             ).await;
         });
         
@@ -211,6 +250,8 @@ impl VirtualBeacon {
         mut sequence_number: u16,
         mut stats: VirtualBeaconStats,
         mut control_rx: mpsc::UnboundedReceiver<BeaconControl>,
+        logger: std::sync::Arc<BeaconLogger>,
+        channel_name: String,
     ) {
         let mut transmission_interval = interval(Duration::from_millis(
             config.transmission.interval_ms as u64
@@ -262,6 +303,8 @@ impl VirtualBeacon {
                         sequence_number,
                         &config,
                         &virtual_channel,
+                        &logger,
+                        &channel_name,
                     ).await {
                         Ok(()) => {
                             stats.messages_sent += 1;
@@ -273,6 +316,24 @@ impl VirtualBeacon {
                         Err(e) => {
                             stats.transmission_failures += 1;
                             eprintln!("❌ Beacon {}: Transmission failed: {}", id, e);
+                            
+                            // Log transmission failure
+                            let metadata = LogMetadata {
+                                channel: channel_name.clone(),
+                                message_version: Some(format!("{:?}", config.transmission.message_version)),
+                                transmission_interval_ms: Some(config.transmission.interval_ms),
+                                movement_pattern: Some(format!("{:?}", movement_pattern)),
+                                custom_fields: std::collections::HashMap::new(),
+                            };
+                            
+                            if let Err(log_err) = logger.log_transmission_failure(
+                                id,
+                                position,
+                                e.to_string(),
+                                metadata,
+                            ).await {
+                                eprintln!("Failed to log transmission failure: {}", log_err);
+                            }
                         }
                     }
                 }
@@ -288,6 +349,8 @@ impl VirtualBeacon {
         sequence_number: u16,
         config: &BeaconConfig,
         virtual_channel: &VirtualChannel,
+        logger: &std::sync::Arc<BeaconLogger>,
+        channel_name: &str,
     ) -> Result<(), EmulatorError> {
         // Determine message version from config
         let message_version = match config.transmission.message_version {
@@ -334,7 +397,25 @@ impl VirtualBeacon {
         };
         
         // Transmit to virtual channel
-        virtual_channel.broadcast_message(virtual_message).await?;
+        virtual_channel.broadcast_message(virtual_message.clone()).await?;
+        
+        // Log the message transmission
+        let metadata = LogMetadata {
+            channel: channel_name.to_string(),
+            message_version: Some(format!("{:?}", config.transmission.message_version)),
+            transmission_interval_ms: Some(config.transmission.interval_ms),
+            movement_pattern: None, // Will be set by caller if needed
+            custom_fields: std::collections::HashMap::new(),
+        };
+        
+        if let Err(e) = logger.log_message_transmission(
+            beacon_id,
+            position,
+            &virtual_message,
+            metadata,
+        ).await {
+            tracing::warn!("Failed to log message transmission: {}", e);
+        }
         
         Ok(())
     }

@@ -81,7 +81,7 @@
   - Implement status formatting for both detailed and summary views
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
 
-- [ ] 10. Implement logging and data export functionality
+- [x] 10. Implement logging and data export functionality
 
   - Create comprehensive logging system for all beacon activities and message transmissions
   - Implement log export in JSON and CSV formats with configurable time ranges

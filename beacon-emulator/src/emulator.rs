@@ -18,6 +18,10 @@ use crate::{
     ExportFormat,
     MovementPattern,
     IpcServer,
+    BeaconLogger,
+    LogEntryType,
+    LogMetadata,
+    LogFilter,
     config::{EmulatorConfigManager, EmulatorBeaconConfig},
 };
 
@@ -53,6 +57,7 @@ pub struct EmulatorManager {
     state_file_path: PathBuf,
     ipc_server: Option<IpcServer>,
     config_manager: EmulatorConfigManager,
+    logger: Arc<BeaconLogger>,
 }
 
 impl EmulatorManager {
@@ -61,6 +66,7 @@ impl EmulatorManager {
         let current_channel = channel_name.to_string();
         let state_file_path = Self::get_default_state_file_path();
         let config_manager = EmulatorConfigManager::new();
+        let logger = Arc::new(BeaconLogger::new());
         
         Self {
             virtual_beacons: HashMap::new(),
@@ -70,6 +76,7 @@ impl EmulatorManager {
             state_file_path,
             ipc_server: None,
             config_manager,
+            logger,
         }
     }
     
@@ -120,14 +127,34 @@ impl EmulatorManager {
             comm_space.get_or_create_channel(&self.current_channel)
         };
         
-        let virtual_beacon = VirtualBeacon::new(
+        let virtual_beacon = VirtualBeacon::new_with_logger(
             beacon_id,
-            beacon_config,
+            beacon_config.clone(),
             position,
             virtual_channel,
+            self.logger.clone(),
         )?;
         
         self.virtual_beacons.insert(beacon_id, virtual_beacon);
+        
+        // Log beacon creation
+        let metadata = LogMetadata {
+            channel: self.current_channel.clone(),
+            message_version: Some(format!("{:?}", beacon_config.transmission.message_version)),
+            transmission_interval_ms: Some(beacon_config.transmission.interval_ms),
+            movement_pattern: Some("Stationary".to_string()),
+            custom_fields: std::collections::HashMap::new(),
+        };
+        
+        if let Err(e) = self.logger.log_event(
+            beacon_id,
+            LogEntryType::BeaconCreated,
+            position,
+            255,
+            metadata,
+        ).await {
+            tracing::warn!("Failed to log beacon creation: {}", e);
+        }
         
         // Save state after creating beacon
         if let Err(e) = self.save_state().await {
@@ -192,6 +219,26 @@ impl EmulatorManager {
             let task_handle = beacon.start().await?;
             self.beacon_tasks.insert(id, task_handle);
             
+            // Log beacon start
+            let status = beacon.get_status();
+            let metadata = LogMetadata {
+                channel: self.current_channel.clone(),
+                message_version: Some(format!("{:?}", status.config.transmission.message_version)),
+                transmission_interval_ms: Some(status.config.transmission.interval_ms),
+                movement_pattern: Some(format!("{:?}", status.movement_pattern)),
+                custom_fields: std::collections::HashMap::new(),
+            };
+            
+            if let Err(e) = self.logger.log_event(
+                id,
+                LogEntryType::BeaconStarted,
+                status.position,
+                255,
+                metadata,
+            ).await {
+                tracing::warn!("Failed to log beacon start: {}", e);
+            }
+            
             // Save state after starting beacon
             if let Err(e) = self.save_state().await {
                 eprintln!("Warning: Failed to save state after starting beacon: {}", e);
@@ -229,6 +276,7 @@ impl EmulatorManager {
     /// Stop a virtual beacon by ID
     pub async fn stop_beacon(&mut self, id: Uuid) -> Result<(), EmulatorError> {
         if let Some(beacon) = self.virtual_beacons.get_mut(&id) {
+            let status = beacon.get_status();
             beacon.stop()?;
             
             // Wait for task to complete gracefully, then remove it
@@ -238,6 +286,25 @@ impl EmulatorManager {
                     std::time::Duration::from_millis(100),
                     task
                 ).await.ok(); // Ignore timeout errors
+            }
+            
+            // Log beacon stop
+            let metadata = LogMetadata {
+                channel: self.current_channel.clone(),
+                message_version: Some(format!("{:?}", status.config.transmission.message_version)),
+                transmission_interval_ms: Some(status.config.transmission.interval_ms),
+                movement_pattern: Some(format!("{:?}", status.movement_pattern)),
+                custom_fields: std::collections::HashMap::new(),
+            };
+            
+            if let Err(e) = self.logger.log_event(
+                id,
+                LogEntryType::BeaconStopped,
+                status.position,
+                255,
+                metadata,
+            ).await {
+                tracing::warn!("Failed to log beacon stop: {}", e);
             }
             
             // Save state after stopping beacon
@@ -261,10 +328,31 @@ impl EmulatorManager {
             }
         }
         
-        if self.virtual_beacons.remove(&id).is_some() {
+        if let Some(beacon) = self.virtual_beacons.remove(&id) {
+            let status = beacon.get_status();
+            
             // Ensure task is cleaned up
             if let Some(task) = self.beacon_tasks.remove(&id) {
                 task.abort();
+            }
+            
+            // Log beacon removal
+            let metadata = LogMetadata {
+                channel: self.current_channel.clone(),
+                message_version: Some(format!("{:?}", status.config.transmission.message_version)),
+                transmission_interval_ms: Some(status.config.transmission.interval_ms),
+                movement_pattern: Some(format!("{:?}", status.movement_pattern)),
+                custom_fields: std::collections::HashMap::new(),
+            };
+            
+            if let Err(e) = self.logger.log_event(
+                id,
+                LogEntryType::BeaconRemoved,
+                status.position,
+                255,
+                metadata,
+            ).await {
+                tracing::warn!("Failed to log beacon removal: {}", e);
             }
             
             // Save state after removing beacon
@@ -361,7 +449,28 @@ impl EmulatorManager {
         position: GeodeticPosition,
     ) -> Result<(), EmulatorError> {
         if let Some(beacon) = self.virtual_beacons.get_mut(&id) {
+            let old_status = beacon.get_status();
             beacon.update_position(position)?;
+            
+            // Log position update
+            let metadata = LogMetadata {
+                channel: self.current_channel.clone(),
+                message_version: Some(format!("{:?}", old_status.config.transmission.message_version)),
+                transmission_interval_ms: Some(old_status.config.transmission.interval_ms),
+                movement_pattern: Some(format!("{:?}", old_status.movement_pattern)),
+                custom_fields: std::collections::HashMap::new(),
+            };
+            
+            if let Err(e) = self.logger.log_event(
+                id,
+                LogEntryType::PositionUpdated { old_position: old_status.position },
+                position,
+                255,
+                metadata,
+            ).await {
+                tracing::warn!("Failed to log position update: {}", e);
+            }
+            
             Ok(())
         } else {
             Err(EmulatorError::BeaconNotFound(id))
@@ -389,7 +498,28 @@ impl EmulatorManager {
         pattern: crate::MovementPattern,
     ) -> Result<(), EmulatorError> {
         if let Some(beacon) = self.virtual_beacons.get_mut(&id) {
-            beacon.set_movement_pattern(pattern)?;
+            let status = beacon.get_status();
+            beacon.set_movement_pattern(pattern.clone())?;
+            
+            // Log movement pattern change
+            let metadata = LogMetadata {
+                channel: self.current_channel.clone(),
+                message_version: Some(format!("{:?}", status.config.transmission.message_version)),
+                transmission_interval_ms: Some(status.config.transmission.interval_ms),
+                movement_pattern: Some(format!("{:?}", pattern)),
+                custom_fields: std::collections::HashMap::new(),
+            };
+            
+            if let Err(e) = self.logger.log_event(
+                id,
+                LogEntryType::MovementPatternChanged,
+                status.position,
+                255,
+                metadata,
+            ).await {
+                tracing::warn!("Failed to log movement pattern change: {}", e);
+            }
+            
             Ok(())
         } else {
             Err(EmulatorError::BeaconNotFound(id))
@@ -440,11 +570,12 @@ impl EmulatorManager {
             config.power.power_modes.power_save_transmission_multiplier = 1.0; // No power saving
             
             // Create the virtual beacon
-            let virtual_beacon = VirtualBeacon::new(
+            let virtual_beacon = VirtualBeacon::new_with_logger(
                 beacon_id,
                 config,
                 position,
                 virtual_channel.clone(),
+                self.logger.clone(),
             )?;
             
             // Add to registry
@@ -475,13 +606,50 @@ impl EmulatorManager {
     
     pub async fn export_logs(
         &self,
-        _output_path: &std::path::Path,
-        _format: ExportFormat,
-        _duration_s: u64,
-    ) -> Result<(), EmulatorError> {
-        // TODO: Implement log export
-        // This will be implemented in a later task
-        Err(EmulatorError::ExportError("Log export not yet implemented".to_string()))
+        output_path: &std::path::Path,
+        format: ExportFormat,
+        duration_s: u64,
+        all_time: bool,
+        beacon_id: Option<Uuid>,
+        include_messages: bool,
+    ) -> Result<usize, EmulatorError> {
+        use crate::export::export_beacon_data;
+        
+        // Create filter based on parameters
+        let filter = if all_time {
+            LogFilter {
+                beacon_id,
+                ..Default::default()
+            }
+        } else {
+            let since = std::time::SystemTime::now() - std::time::Duration::from_secs(duration_s);
+            LogFilter {
+                beacon_id,
+                start_time: Some(since),
+                ..Default::default()
+            }
+        };
+        
+        // Get current beacon status
+        let beacon_status = if let Some(id) = beacon_id {
+            if self.beacon_exists(id) {
+                vec![self.get_beacon_status(id)?]
+            } else {
+                vec![]
+            }
+        } else {
+            self.list_beacons()
+        };
+        
+        // Export the data
+        export_beacon_data(
+            &self.logger,
+            &beacon_status,
+            output_path,
+            format,
+            filter,
+            include_messages,
+        ).await
     }
     
     /// Load beacon configuration from a file with automatic format detection and validation
@@ -606,11 +774,12 @@ impl EmulatorManager {
                 comm_space.get_or_create_channel(&self.current_channel)
             };
             
-            let mut virtual_beacon = VirtualBeacon::new(
+            let mut virtual_beacon = VirtualBeacon::new_with_logger(
                 beacon_data.id,
                 beacon_data.config,
                 beacon_data.position,
                 virtual_channel,
+                self.logger.clone(),
             )?;
             
             // Set movement pattern
@@ -699,6 +868,22 @@ impl EmulatorManager {
     /// Get IPC server port (if running)
     pub fn get_ipc_server_port(&self) -> Option<u16> {
         self.ipc_server.as_ref().map(|server| server.port())
+    }
+    
+    /// Get reference to the beacon logger
+    pub fn get_logger(&self) -> Arc<BeaconLogger> {
+        self.logger.clone()
+    }
+    
+    /// Get logging statistics
+    pub async fn get_logging_stats(&self) -> crate::LoggingStats {
+        self.logger.get_stats().await
+    }
+    
+    /// Clear all log entries
+    pub async fn clear_logs(&self) -> Result<(), EmulatorError> {
+        self.logger.clear_logs().await;
+        Ok(())
     }
     
     /// Synchronize communication spaces between emulator and IPC server

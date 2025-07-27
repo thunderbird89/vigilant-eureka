@@ -62,11 +62,23 @@ pub struct Cli {
     #[arg(long, default_value = "8765", help = "Port for IPC server (for virtual receiver connections)")]
     pub ipc_port: u16,
     
+    /// Run in quiet mode (minimal output, suitable for automation)
+    #[arg(short, long, help = "Suppress non-essential output for automation")]
+    pub quiet: bool,
+    
+    /// Non-interactive mode (skip all prompts, use defaults)
+    #[arg(long, help = "Run in non-interactive mode for automation")]
+    pub non_interactive: bool,
+    
+    /// Exit with specific codes for automation (0=success, 1=error, 2=warning)
+    #[arg(long, help = "Use specific exit codes for automation")]
+    pub automation_mode: bool,
+    
     #[command(subcommand)]
     pub command: EmulatorCommand,
 }
 
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 pub enum EmulatorCommand {
     /// Create a new virtual beacon
     #[command(long_about = r#"
@@ -590,6 +602,168 @@ EXAMPLES:
         #[arg(long, help = "Validate configuration during conversion")]
         validate: bool,
     },
+    
+    /// Execute batch operations from a configuration file
+    #[command(long_about = r#"
+Execute multiple beacon operations from a batch configuration file.
+
+This command allows you to define multiple beacon creation, scenario setup,
+and management operations in a single configuration file and execute them
+all at once. This is particularly useful for automated testing and CI/CD
+pipelines.
+
+BATCH FILE FORMAT (JSON):
+{
+  "operations": [
+    {
+      "type": "create_beacon",
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "position": [32.123, 45.476, 10.0],
+      "interval": 5000,
+      "movement": "stationary",
+      "start": true
+    },
+    {
+      "type": "create_scenario",
+      "scenario_type": "triangle",
+      "count": 3,
+      "spacing": 100.0,
+      "center": [32.0, 45.0, 15.0],
+      "start_all": true
+    },
+    {
+      "type": "wait",
+      "duration": 10
+    },
+    {
+      "type": "export_logs",
+      "output": "test_results.json",
+      "format": "json",
+      "duration": 60
+    }
+  ]
+}
+
+EXAMPLES:
+    # Execute batch operations
+    beacon-emulator batch --file operations.json
+
+    # Execute with dry-run to validate
+    beacon-emulator batch --file operations.json --dry-run
+
+    # Execute with custom timeout
+    beacon-emulator batch --file operations.json --timeout 300
+"#)]
+    Batch {
+        /// Batch operations file (JSON format)
+        #[arg(short, long, help = "Batch operations configuration file")]
+        file: PathBuf,
+        
+        /// Perform dry-run without executing operations
+        #[arg(long, help = "Validate batch file without executing operations")]
+        dry_run: bool,
+        
+        /// Timeout for batch execution in seconds
+        #[arg(long, default_value = "600", help = "Maximum execution time in seconds")]
+        timeout: u64,
+        
+        /// Continue on errors instead of stopping
+        #[arg(long, help = "Continue executing operations even if some fail")]
+        continue_on_error: bool,
+        
+        /// Output detailed execution log
+        #[arg(long, help = "Output detailed execution log")]
+        verbose: bool,
+    },
+    
+    /// Reset emulator to clean state for automated testing
+    #[command(long_about = r#"
+Reset the emulator to a clean state for automated testing.
+
+This command provides a comprehensive reset that stops all beacons,
+clears all state, and optionally resets configuration files. It's
+designed for use in automated testing environments where you need
+a clean slate between test runs.
+
+EXAMPLES:
+    # Basic reset (stops all beacons, clears state)
+    beacon-emulator reset
+
+    # Reset with confirmation skip (for automation)
+    beacon-emulator reset --force
+
+    # Reset and remove all config files
+    beacon-emulator reset --force --clean-configs
+
+    # Reset with custom state file
+    beacon-emulator reset --state-file /tmp/test_state.json --force
+"#)]
+    Reset {
+        /// Skip confirmation prompts (for automation)
+        #[arg(long, help = "Skip all confirmation prompts")]
+        force: bool,
+        
+        /// Also remove generated configuration files
+        #[arg(long, help = "Remove generated configuration files")]
+        clean_configs: bool,
+        
+        /// Reset specific state file
+        #[arg(long, help = "Reset specific state file instead of default")]
+        state_file: Option<PathBuf>,
+    },
+    
+    /// Generate test scenario configuration files
+    #[command(long_about = r#"
+Generate configuration files for common test scenarios.
+
+This command creates pre-configured scenario files that can be used
+with the batch command for automated testing. It includes templates
+for common testing patterns like performance tests, accuracy validation,
+and stress testing.
+
+SCENARIO TEMPLATES:
+    performance     - High-throughput beacon setup for performance testing
+    accuracy        - Precise beacon arrangements for accuracy validation  
+    stress          - Large number of beacons for stress testing
+    integration     - Multi-scenario setup for integration testing
+    custom          - Interactive custom scenario builder
+
+EXAMPLES:
+    # Generate performance test scenario
+    beacon-emulator generate-scenario --template performance --output perf_test.json
+
+    # Generate custom scenario with specific parameters
+    beacon-emulator generate-scenario --template custom --output custom.json \
+                                     --beacon-count 10 --area-size 500
+
+    # Generate all standard scenarios
+    beacon-emulator generate-scenario --template all --output-dir scenarios/
+"#)]
+    GenerateScenario {
+        /// Scenario template type
+        #[arg(short, long, help = "Scenario template to generate")]
+        template: ScenarioTemplate,
+        
+        /// Output file path (or directory for 'all' template)
+        #[arg(short, long, help = "Output file or directory path")]
+        output: PathBuf,
+        
+        /// Number of beacons for custom scenarios
+        #[arg(long, help = "Number of beacons (for custom template)")]
+        beacon_count: Option<usize>,
+        
+        /// Area size in meters for beacon distribution
+        #[arg(long, help = "Area size in meters (for custom template)")]
+        area_size: Option<f64>,
+        
+        /// Test duration in seconds
+        #[arg(long, help = "Test duration in seconds")]
+        duration: Option<u64>,
+        
+        /// Include receiver configuration
+        #[arg(long, help = "Include virtual receiver configuration")]
+        include_receiver: bool,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -635,6 +809,22 @@ impl Default for ConfigFormat {
     fn default() -> Self {
         Self::Toml
     }
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ScenarioTemplate {
+    #[value(name = "performance")]
+    Performance,
+    #[value(name = "accuracy")]
+    Accuracy,
+    #[value(name = "stress")]
+    Stress,
+    #[value(name = "integration")]
+    Integration,
+    #[value(name = "custom")]
+    Custom,
+    #[value(name = "all")]
+    All,
 }
 
 impl From<ConfigFormat> for crate::config::ConfigFormat {

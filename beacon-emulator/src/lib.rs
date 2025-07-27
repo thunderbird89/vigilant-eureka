@@ -17,6 +17,8 @@ pub mod daemon_protocol;
 pub mod daemon_server;
 pub mod ipc_server;
 pub mod monitor;
+pub mod batch;
+pub mod scenario_templates;
 
 #[cfg(test)]
 pub mod test_data_models;

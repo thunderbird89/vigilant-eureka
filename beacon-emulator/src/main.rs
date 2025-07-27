@@ -1,10 +1,11 @@
 use beacon_emulator::{
-    cli::{Cli, EmulatorCommand, ListFormat, ConfigFormat},
+    cli::{Cli, EmulatorCommand, ListFormat, ConfigFormat, ScenarioTemplate},
     EmulatorManager, EmulatorError, MovementPattern, MovementPatternValidator,
     daemon_protocol::{DaemonCommand, DaemonResponse, is_daemon_running, send_daemon_command},
     daemon_server::DaemonServer,
     monitor::{BeaconMonitor, MonitorConfig},
-    config::{EmulatorConfigManager, EmulatorBeaconConfig},
+    batch::{BatchExecutor, load_batch_config},
+    scenario_templates::{generate_scenario_config, generate_all_scenarios},
 };
 use clap::Parser;
 use shared_positioning::{GeodeticPosition, BeaconConfig};
@@ -21,16 +22,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse CLI arguments first to get log level
     let cli = Cli::parse();
     
-    // Initialize logging with specified level
-    let log_level = match cli.log_level.to_lowercase().as_str() {
-        "trace" => "trace",
-        "debug" => "debug", 
-        "info" => "info",
-        "warn" => "warn",
-        "error" => "error",
-        _ => {
-            eprintln!("Invalid log level '{}', using 'info'", cli.log_level);
-            "info"
+    // Initialize logging with specified level, considering quiet mode
+    let log_level = if cli.quiet {
+        "error" // Only show errors in quiet mode
+    } else {
+        match cli.log_level.to_lowercase().as_str() {
+            "trace" => "trace",
+            "debug" => "debug", 
+            "info" => "info",
+            "warn" => "warn",
+            "error" => "error",
+            _ => {
+                if !cli.quiet {
+                    eprintln!("Invalid log level '{}', using 'info'", cli.log_level);
+                }
+                "info"
+            }
         }
     };
     
@@ -58,8 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut emulator = match EmulatorManager::new_with_persistence(&cli.channel).await {
                 Ok(mut manager) => {
                     // Set custom state file path if provided
-                    if let Some(state_file_path) = cli.state_file {
-                        manager.set_state_file_path(state_file_path);
+                    if let Some(ref state_file_path) = cli.state_file {
+                        manager.set_state_file_path(state_file_path.clone());
                         // Reload state from the new path
                         if let Err(e) = manager.load_state().await {
                             warn!("Failed to load state from custom path: {}", e);
@@ -72,22 +79,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     warn!("Failed to load existing state, starting fresh: {}", e);
                     let mut manager = EmulatorManager::new(&cli.channel);
                     // Set custom state file path if provided
-                    if let Some(state_file_path) = cli.state_file {
-                        manager.set_state_file_path(state_file_path);
+                    if let Some(ref state_file_path) = cli.state_file {
+                        manager.set_state_file_path(state_file_path.clone());
                     }
                     manager
                 }
             };
             
             // Execute daemon command directly
-            match execute_command(&mut emulator, cli.command).await {
+            let command = cli.command.clone();
+            match execute_command(&mut emulator, command, &cli).await {
                 Ok(()) => {
                     debug!("Command completed successfully");
                 }
                 Err(e) => {
                     error!("Command failed: {}", e);
-                    print_error_help(&e);
-                    std::process::exit(1);
+                    if !cli.quiet {
+                        print_error_help(&e);
+                    }
+                    let exit_code = if cli.automation_mode {
+                        get_automation_exit_code(&e)
+                    } else {
+                        1
+                    };
+                    std::process::exit(exit_code);
                 }
             }
         }
@@ -101,7 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(e) => {
                         error!("Failed to communicate with daemon: {}", e);
-                        std::process::exit(1);
+                        let exit_code = if cli.automation_mode { 1 } else { 1 };
+                        std::process::exit(exit_code);
                     }
                 }
             } else {
@@ -111,8 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 let mut emulator = match EmulatorManager::new_with_persistence(&cli.channel).await {
                     Ok(mut manager) => {
-                        if let Some(state_file_path) = cli.state_file {
-                            manager.set_state_file_path(state_file_path);
+                        if let Some(ref state_file_path) = cli.state_file {
+                            manager.set_state_file_path(state_file_path.clone());
                             if let Err(e) = manager.load_state().await {
                                 warn!("Failed to load state from custom path: {}", e);
                             }
@@ -122,21 +138,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => {
                         warn!("Failed to load existing state, starting fresh: {}", e);
                         let mut manager = EmulatorManager::new(&cli.channel);
-                        if let Some(state_file_path) = cli.state_file {
-                            manager.set_state_file_path(state_file_path);
+                        if let Some(ref state_file_path) = cli.state_file {
+                            manager.set_state_file_path(state_file_path.clone());
                         }
                         manager
                     }
                 };
                 
-                match execute_command(&mut emulator, cli.command).await {
+                let command = cli.command.clone();
+                match execute_command(&mut emulator, command, &cli).await {
                     Ok(()) => {
                         debug!("Command completed successfully");
                     }
                     Err(e) => {
                         error!("Command failed: {}", e);
-                        print_error_help(&e);
-                        std::process::exit(1);
+                        if !cli.quiet {
+                            print_error_help(&e);
+                        }
+                        let exit_code = if cli.automation_mode {
+                            get_automation_exit_code(&e)
+                        } else {
+                            1
+                        };
+                        std::process::exit(exit_code);
                     }
                 }
             }
@@ -152,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn execute_command(
     emulator: &mut EmulatorManager,
     command: EmulatorCommand,
+    cli_flags: &Cli,
 ) -> Result<(), EmulatorError> {
     match command {
         EmulatorCommand::Create {
@@ -209,7 +234,7 @@ async fn execute_command(
         }
         
         EmulatorCommand::Clear { confirm } => {
-            execute_clear_command(emulator, confirm).await
+            execute_clear_command(emulator, confirm, cli_flags.non_interactive).await
         }
         
         EmulatorCommand::Daemon { status_interval, auto_start, background } => {
@@ -226,6 +251,18 @@ async fn execute_command(
         
         EmulatorCommand::ConvertConfig { input, output, validate } => {
             execute_convert_config_command(emulator, input, output, validate).await
+        }
+        
+        EmulatorCommand::Batch { file, dry_run, timeout, continue_on_error, verbose } => {
+            execute_batch_command(emulator, file, dry_run, timeout, continue_on_error, verbose).await
+        }
+        
+        EmulatorCommand::Reset { force, clean_configs, state_file } => {
+            execute_reset_command(emulator, force, clean_configs, state_file, cli_flags.non_interactive, cli_flags.quiet).await
+        }
+        
+        EmulatorCommand::GenerateScenario { template, output, beacon_count, area_size, duration, include_receiver } => {
+            execute_generate_scenario_command(emulator, template, output, beacon_count, area_size, duration, include_receiver).await
         }
     }
 }
@@ -704,12 +741,14 @@ async fn execute_status_command(
     }
     
     Ok(())
-}async 
-fn execute_clear_command(
+}
+
+async fn execute_clear_command(
     emulator: &mut EmulatorManager,
     confirm: bool,
+    non_interactive: bool,
 ) -> Result<(), EmulatorError> {
-    if !confirm {
+    if !confirm && !non_interactive {
         print!("This will stop and remove all beacons and clear the state file. Continue? (y/N): ");
         io::stdout().flush().unwrap();
         
@@ -729,6 +768,18 @@ fn execute_clear_command(
     println!("Cleared {} beacon(s) and reset emulator state.", beacon_count);
     
     Ok(())
+}
+
+fn get_automation_exit_code(e: &EmulatorError) -> i32 {
+    match e {
+        EmulatorError::BeaconNotFound(_) => 2, // Warning-level error
+        EmulatorError::BeaconExists(_) => 2,   // Warning-level error
+        EmulatorError::ConfigError(_) => 1,    // Error
+        EmulatorError::MovementError(_) => 1,  // Error
+        EmulatorError::InvalidScenario(_) => 1, // Error
+        EmulatorError::IoError(_) => 1,        // Error
+        _ => 1, // Default to error
+    }
 }
 
 fn print_error_help(e: &EmulatorError) {
@@ -755,6 +806,239 @@ fn print_error_help(e: &EmulatorError) {
             eprintln!("Error: {}", e);
         }
     }
+}
+
+async fn execute_batch_command(
+    emulator: &mut EmulatorManager,
+    file: PathBuf,
+    dry_run: bool,
+    _timeout: u64,
+    _continue_on_error: bool,
+    verbose: bool,
+) -> Result<(), EmulatorError> {
+    // Load batch configuration
+    let config = load_batch_config(&file).await?;
+    
+    // Create batch executor
+    let mut executor = BatchExecutor::new(emulator).with_verbose(verbose);
+    
+    if dry_run {
+        // Validate configuration without executing
+        let warnings = executor.validate_batch(&config)?;
+        
+        println!("Batch configuration validation completed successfully.");
+        println!("Total operations: {}", config.operations.len());
+        
+        if !warnings.is_empty() {
+            println!("\nWarnings:");
+            for warning in warnings {
+                println!("  - {}", warning);
+            }
+        }
+        
+        println!("\nOperations to be executed:");
+        for (index, operation) in config.operations.iter().enumerate() {
+            println!("  {}: {:?}", index + 1, operation);
+        }
+        
+        return Ok(());
+    }
+    
+    // Execute batch operations
+    let result = executor.execute_batch(config).await?;
+    
+    // Print results
+    println!("Batch execution completed:");
+    println!("  Total operations: {}", result.total_operations);
+    println!("  Successful: {}", result.successful_operations);
+    println!("  Failed: {}", result.failed_operations);
+    println!("  Execution time: {:.2}s", result.execution_time.as_secs_f64());
+    
+    if verbose {
+        println!("\nOperation details:");
+        for op_result in result.operation_results {
+            let status = if op_result.success { "✓" } else { "✗" };
+            println!("  {} Operation {}: {} ({:.2}s) - {}", 
+                     status, op_result.operation_index + 1, op_result.operation_type,
+                     op_result.execution_time.as_secs_f64(), op_result.message);
+        }
+    }
+    
+    if result.failed_operations > 0 {
+        return Err(EmulatorError::ConfigError(
+            format!("{} operations failed", result.failed_operations)
+        ));
+    }
+    
+    Ok(())
+}
+
+async fn execute_reset_command(
+    emulator: &mut EmulatorManager,
+    force: bool,
+    clean_configs: bool,
+    state_file: Option<PathBuf>,
+    non_interactive: bool,
+    quiet: bool,
+) -> Result<(), EmulatorError> {
+    if !force && !non_interactive {
+        print!("This will stop all beacons, clear state, and reset the emulator. Continue? (y/N): ");
+        io::stdout().flush().unwrap();
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        
+        if !input.trim().to_lowercase().starts_with('y') {
+            println!("Reset cancelled.");
+            return Ok(());
+        }
+    }
+    
+    // Get current beacon count before clearing
+    let beacon_count = emulator.get_total_beacon_count();
+    
+    // Stop all beacons and clear state
+    let stopped_beacons = emulator.stop_all_beacons().await?;
+    emulator.clear_state().await?;
+    
+    // Clean configuration files if requested
+    if clean_configs {
+        // Remove generated config files (be careful not to remove user configs)
+        let config_patterns = vec![
+            "data/generated_*.toml",
+            "data/generated_*.json",
+            "data/test_*.toml",
+            "data/test_*.json",
+        ];
+        
+        let mut removed_files = 0;
+        for pattern in config_patterns {
+            if let Ok(entries) = glob::glob(pattern) {
+                for entry in entries.flatten() {
+                    if std::fs::remove_file(&entry).is_ok() {
+                        removed_files += 1;
+                        if !quiet { // Only print if not in quiet mode
+                            println!("Removed config file: {}", entry.display());
+                        }
+                    }
+                }
+            }
+        }
+        
+        if removed_files > 0 {
+            println!("Removed {} generated configuration files", removed_files);
+        }
+    }
+    
+    // Handle custom state file
+    if let Some(custom_state_file) = state_file {
+        if custom_state_file.exists() {
+            std::fs::remove_file(&custom_state_file)
+                .map_err(|e| EmulatorError::IoError(e))?;
+            println!("Removed custom state file: {}", custom_state_file.display());
+        }
+    }
+    
+    println!("Reset completed:");
+    println!("  Stopped {} beacons", stopped_beacons.len());
+    println!("  Cleared {} total beacons from registry", beacon_count);
+    println!("  Reset emulator state");
+    
+    if clean_configs {
+        println!("  Cleaned generated configuration files");
+    }
+    
+    Ok(())
+}
+
+async fn execute_generate_scenario_command(
+    _emulator: &EmulatorManager,
+    template: ScenarioTemplate,
+    output: PathBuf,
+    beacon_count: Option<usize>,
+    area_size: Option<f64>,
+    duration: Option<u64>,
+    include_receiver: bool,
+) -> Result<(), EmulatorError> {
+    match template {
+        ScenarioTemplate::All => {
+            // Generate all scenario templates
+            let generated_files = generate_all_scenarios(&output, beacon_count, area_size, duration)
+                .map_err(|e| EmulatorError::ConfigError(e))?;
+            
+            // Create output directory if it doesn't exist
+            if !output.exists() {
+                std::fs::create_dir_all(&output)
+                    .map_err(|e| EmulatorError::IoError(e))?;
+            }
+            
+            // Write each scenario to a file
+            for (i, file_path) in generated_files.iter().enumerate() {
+                let template_type = match i {
+                    0 => ScenarioTemplate::Performance,
+                    1 => ScenarioTemplate::Accuracy,
+                    2 => ScenarioTemplate::Stress,
+                    3 => ScenarioTemplate::Integration,
+                    4 => ScenarioTemplate::Custom,
+                    _ => continue,
+                };
+                
+                let config = generate_scenario_config(template_type, beacon_count, area_size, duration, include_receiver)
+                    .map_err(|e| EmulatorError::ConfigError(e))?;
+                
+                let json_content = serde_json::to_string_pretty(&config)
+                    .map_err(|e| EmulatorError::ConfigError(format!("JSON serialization failed: {}", e)))?;
+                
+                tokio::fs::write(file_path, json_content).await
+                    .map_err(|e| EmulatorError::IoError(e))?;
+                
+                println!("Generated scenario: {}", file_path.display());
+            }
+            
+            println!("Generated {} scenario templates in {}", generated_files.len(), output.display());
+        }
+        
+        _ => {
+            // Generate single scenario template
+            let config = generate_scenario_config(template.clone(), beacon_count, area_size, duration, include_receiver)
+                .map_err(|e| EmulatorError::ConfigError(e))?;
+            
+            let json_content = serde_json::to_string_pretty(&config)
+                .map_err(|e| EmulatorError::ConfigError(format!("JSON serialization failed: {}", e)))?;
+            
+            // Create parent directory if it doesn't exist
+            if let Some(parent) = output.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| EmulatorError::IoError(e))?;
+                }
+            }
+            
+            tokio::fs::write(&output, json_content).await
+                .map_err(|e| EmulatorError::IoError(e))?;
+            
+            println!("Generated {} scenario template: {}", 
+                     match template {
+                         ScenarioTemplate::Performance => "performance",
+                         ScenarioTemplate::Accuracy => "accuracy", 
+                         ScenarioTemplate::Stress => "stress",
+                         ScenarioTemplate::Integration => "integration",
+                         ScenarioTemplate::Custom => "custom",
+                         _ => "unknown",
+                     },
+                     output.display());
+            
+            println!("Scenario: {}", config.name);
+            println!("Description: {}", config.description);
+            println!("Operations: {}", config.batch_config.operations.len());
+            
+            if include_receiver && config.receiver_config.is_some() {
+                println!("Includes virtual receiver configuration");
+            }
+        }
+    }
+    
+    Ok(())
 }
 
 async fn execute_daemon_client_command(command: EmulatorCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -820,8 +1104,11 @@ async fn execute_daemon_client_command(command: EmulatorCommand) -> Result<(), B
         
         EmulatorCommand::GenerateTemplate { .. } |
         EmulatorCommand::ValidateConfig { .. } |
-        EmulatorCommand::ConvertConfig { .. } => {
-            return Err("Configuration commands are handled locally and don't require daemon communication".into());
+        EmulatorCommand::ConvertConfig { .. } |
+        EmulatorCommand::Batch { .. } |
+        EmulatorCommand::Reset { .. } |
+        EmulatorCommand::GenerateScenario { .. } => {
+            return Err("These commands are handled locally and don't require daemon communication".into());
         }
     };
     

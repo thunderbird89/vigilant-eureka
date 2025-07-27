@@ -88,21 +88,125 @@ The current implementation is a mock that demonstrates the interface and functio
 
 ## Integration with Beacon Emulator
 
-To use the virtual receiver with the beacon emulator:
+### Complete Integration Workflow
 
-1. Start the beacon emulator with virtual beacons on a specific channel:
-   ```bash
-   cd beacon-emulator
-   cargo run -- create --channel test_channel --lat 32.123 --lon 45.476 --depth 0
-   ```
+To use the virtual receiver with the beacon emulator for end-to-end testing:
 
-2. Start the virtual receiver on the same channel:
-   ```bash
-   cd receiver
-   cargo run -- virtual --channel test_channel
-   ```
+#### 1. Set up Virtual Beacons
 
-3. The receiver will connect to the virtual channel and begin receiving beacon transmissions
+```bash
+# Create test scenario with multiple beacons
+beacon-emulator --channel integration_test scenario triangle \
+                --spacing 100 --center 32.0,45.0,10.0 --start-all
+
+# Or create individual beacons
+beacon-emulator --channel integration_test create \
+                --lat 32.123 --lon 45.476 --depth 10.0 --start
+```
+
+#### 2. Start Daemon Mode
+
+The emulator requires daemon mode for actual message transmission:
+
+```bash
+# Start daemon in background
+beacon-emulator --channel integration_test daemon --auto-start --background &
+
+# Or run in foreground with status updates
+beacon-emulator --channel integration_test daemon --auto-start --status-interval 10
+```
+
+#### 3. Connect Virtual Receiver
+
+```bash
+# Start virtual receiver on same channel
+cd receiver
+cargo run -- virtual --channel integration_test --id 1 --update-interval 2
+
+# Multiple receivers can connect to same channel
+cargo run -- virtual --channel integration_test --id 2 --update-interval 1 &
+cargo run -- virtual --channel integration_test --id 3 --update-interval 3 &
+```
+
+#### 4. Monitor Both Systems
+
+```bash
+# Terminal 1: Monitor beacon emulator
+beacon-emulator --channel integration_test monitor --compact
+
+# Terminal 2: Monitor receiver output (check console output)
+# The receiver will display positioning calculations and status
+
+# Terminal 3: Check performance
+beacon-emulator --channel integration_test performance --detailed
+```
+
+#### 5. Collect Test Data
+
+```bash
+# Export beacon transmission data
+beacon-emulator --channel integration_test export \
+                --output beacon_data.json --duration 300 --include-messages
+
+# Receiver data is displayed in console output
+# For automated testing, redirect receiver output to file:
+cargo run -- virtual --channel integration_test > receiver_output.log 2>&1
+```
+
+### Channel Isolation Testing
+
+Test multiple independent scenarios simultaneously:
+
+```bash
+# Scenario A: Accuracy testing
+beacon-emulator --channel accuracy_test scenario square \
+                --spacing 150 --center 32.0,45.0,10.0 --start-all
+beacon-emulator --channel accuracy_test daemon --auto-start --background &
+
+# Scenario B: Performance testing  
+beacon-emulator --channel performance_test scenario grid \
+                --count 16 --spacing 50 --center 32.1,45.1,15.0 --start-all
+beacon-emulator --channel performance_test daemon --auto-start --background &
+
+# Connect receivers to different channels
+cd receiver
+cargo run -- virtual --channel accuracy_test --id 1 &
+cargo run -- virtual --channel performance_test --id 2 &
+```
+
+### Automated Integration Testing
+
+```bash
+#!/bin/bash
+# integration_test.sh
+
+CHANNEL="automated_test_$(date +%s)"
+TEST_DURATION=60
+
+echo "Starting integration test on channel: $CHANNEL"
+
+# Setup beacons
+beacon-emulator --channel $CHANNEL scenario triangle --spacing 100 --start-all
+beacon-emulator --channel $CHANNEL daemon --auto-start --background &
+DAEMON_PID=$!
+
+# Start virtual receiver
+cd receiver
+timeout $TEST_DURATION cargo run -- virtual --channel $CHANNEL --id 1 > receiver_results.log 2>&1 &
+RECEIVER_PID=$!
+
+# Wait for test completion
+sleep $TEST_DURATION
+
+# Collect results
+beacon-emulator --channel $CHANNEL export --output beacon_results.json --duration $TEST_DURATION
+
+# Cleanup
+kill $DAEMON_PID $RECEIVER_PID 2>/dev/null
+beacon-emulator --channel $CHANNEL stop-all --remove
+
+echo "Integration test completed. Results in beacon_results.json and receiver_results.log"
+```
 
 ## Testing
 

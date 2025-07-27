@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::transceiver_interface::CommError;
-use crate::message_parser::MessageParseError;
+use shared_positioning::CommError;
+use shared_positioning::MessageParseError;
 
 /// Comprehensive error classification for positioning system
 #[derive(Debug, Clone, PartialEq)]

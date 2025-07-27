@@ -1,12 +1,15 @@
 use nalgebra::{Matrix3, Vector3};
 use serde::Deserialize;
 use std::f64::consts::PI;
+use clap::{Parser, Subcommand};
 
 // Import shared components from shared-positioning library
 use shared_positioning::{
     MessageParser, TransceiverInterface, CoordinateSystemManager, 
     PositioningError, ErrorRecoveryManager, SystemConfig
 };
+
+use virtual_transceiver::{VirtualTransceiver, VirtualTransceiverFactory};
 
 pub mod accuracy_validation;
 pub mod performance_monitor;
@@ -16,6 +19,9 @@ pub mod transceiver_demo;
 pub mod advanced_positioning;
 pub mod graceful_degradation;
 pub mod coordinate_system_demo;
+pub mod virtual_transceiver;
+pub mod virtual_receiver_demo;
+pub mod ipc_client;
 
 const SPEED_OF_SOUND_WATER: f64 = 1500.0; // m/s
 
@@ -753,6 +759,249 @@ pub fn transceiver_communication_demo() {
 /// Demonstration of coordinate system management with optimized transformations
 pub fn coordinate_system_management_demo() {
     coordinate_system_demo::coordinate_system_demo();
+}
+
+/// CLI structure for receiver program
+#[derive(Parser)]
+#[command(name = "receiver")]
+#[command(about = "Underwater positioning system receiver")]
+pub struct Cli {
+    #[command(subcommand)]
+    command: Option<ReceiverCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum ReceiverCommand {
+    /// Run receiver in virtual mode (connect to beacon emulator)
+    Virtual {
+        /// Virtual communication channel name
+        #[arg(short, long, default_value = "default")]
+        channel: String,
+        
+        /// Receiver ID
+        #[arg(short, long, default_value = "1")]
+        id: u8,
+        
+        /// Update interval in seconds
+        #[arg(short, long, default_value = "1")]
+        update_interval: u64,
+        
+        /// Maximum number of positioning attempts
+        #[arg(short, long, default_value = "100")]
+        max_attempts: usize,
+    },
+    
+    /// Run receiver with JSON anchor data (legacy mode)
+    Json {
+        /// JSON file path
+        json_file: String,
+        
+        /// Receiver timestamp in milliseconds
+        receiver_timestamp: u64,
+    },
+    
+    /// Run embedded positioning demo
+    EmbeddedDemo,
+    
+    /// Run performance monitoring demo
+    PerformanceDemo,
+    
+    /// Run accuracy validation
+    AccuracyValidation,
+    
+    /// Run message parsing demo
+    MessageParsingDemo,
+    
+    /// Run transceiver demo
+    TransceiverDemo,
+    
+    /// Run advanced positioning demo
+    AdvancedPositioningDemo,
+    
+    /// Run error handling demo
+    ErrorHandlingDemo,
+    
+    /// Run virtual receiver demo
+    VirtualReceiverDemo,
+}
+
+/// Virtual receiver implementation that connects to beacon emulator
+pub async fn run_virtual_receiver(
+    channel: String,
+    id: u8,
+    update_interval: u64,
+    max_attempts: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting virtual receiver {} on channel '{}'", id, channel);
+    
+    // Create and connect virtual transceiver
+    let mut transceiver = VirtualTransceiverFactory::create_and_connect(id, channel.clone()).await?;
+    
+    println!("Connected to virtual channel '{}', waiting for beacon messages...", channel);
+    
+    let mut message_parser = MessageParser::new();
+    let mut anchor_messages: Vec<Anchor> = Vec::new();
+    let mut positioning_attempts = 0;
+    
+    let update_duration = std::time::Duration::from_secs(update_interval);
+    let mut last_update = std::time::Instant::now();
+    let mut last_status_log = std::time::Instant::now();
+    
+    loop {
+        // Check for new messages
+        match transceiver.read_message() {
+            Ok(Some(raw_message)) => {
+                println!("\n🎯 MESSAGE PROCESSING:");
+                println!("   Signal Strength: {}/255", raw_message.signal_strength.unwrap_or(0));
+                println!("   Message Length: {} bytes", raw_message.data.len());
+                println!("   Transceiver ID: {}", raw_message.transceiver_id);
+                
+                // Parse the message
+                match message_parser.parse_message(&raw_message) {
+                    Ok(parsed_message) => {
+                        println!("✅ MESSAGE PARSED SUCCESSFULLY:");
+                        println!("   Anchor ID: {}", parsed_message.anchor_id);
+                        println!("   Sequence: {}", parsed_message.message_sequence);
+                        println!("   Message Version: {:?}", parsed_message.message_version);
+                        println!("   Parsed Position: lat={:.6}°, lon={:.6}°, depth={:.2}m", 
+                                 parsed_message.position.latitude, parsed_message.position.longitude, parsed_message.position.depth);
+                        
+                        // Convert to Anchor format for trilateration
+                        let anchor = Anchor {
+                            id: parsed_message.anchor_id.to_string(),
+                            timestamp: raw_message.timestamp_received,
+                            position: Position {
+                                lat: parsed_message.position.latitude,
+                                lon: parsed_message.position.longitude,
+                                depth: parsed_message.position.depth,
+                            },
+                        };
+                        
+                        // Add to anchor list (keep only recent messages)
+                        anchor_messages.push(anchor.clone());
+                        
+                        // Keep only messages from last 10 seconds
+                        let current_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        
+                        let before_cleanup = anchor_messages.len();
+                        anchor_messages.retain(|a| current_time - a.timestamp < 10000);
+                        let after_cleanup = anchor_messages.len();
+                        
+                        if before_cleanup != after_cleanup {
+                            println!("🧹 Cleaned up {} old anchor messages", before_cleanup - after_cleanup);
+                        }
+                        
+                        println!("📊 ANCHOR STATUS:");
+                        println!("   Active anchors: {}", anchor_messages.len());
+                        for (i, anchor) in anchor_messages.iter().enumerate() {
+                            let age_ms = current_time - anchor.timestamp;
+                            println!("   [{}] ID: {}, Age: {}ms, Pos: ({:.6}, {:.6}, {:.2})", 
+                                     i+1, anchor.id, age_ms, anchor.position.lat, anchor.position.lon, anchor.position.depth);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("❌ FAILED TO PARSE MESSAGE: {}", e);
+                        eprintln!("   Raw data: {:02X?}", &raw_message.data[..std::cmp::min(32, raw_message.data.len())]);
+                    }
+                }
+            }
+            Ok(None) => {
+                // No message available - this is normal, don't spam logs
+            }
+            Err(e) => {
+                eprintln!("Error reading message: {}", e);
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+        
+        // Attempt positioning if we have enough anchors and enough time has passed
+        if anchor_messages.len() >= 3 && last_update.elapsed() >= update_duration {
+            println!("\n🧮 ATTEMPTING POSITION CALCULATION:");
+            println!("   Available anchors: {}", anchor_messages.len());
+            println!("   Time since last update: {:.1}s", last_update.elapsed().as_secs_f64());
+            
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            
+            println!("   Current timestamp: {} ms", current_time);
+            
+            match trilaterate(&anchor_messages, current_time) {
+                Ok((geodetic_pos, local_pos)) => {
+                    println!("\n🎯 === POSITION COMPUTED SUCCESSFULLY (Attempt {}) ===", positioning_attempts + 1);
+                    println!("📍 LOCAL POSITION (ENU Coordinates):");
+                    println!("   East:  {:.3} meters", local_pos.x);
+                    println!("   North: {:.3} meters", local_pos.y);
+                    println!("   Down:  {:.3} meters", local_pos.z);
+                    println!("🌍 GEODETIC POSITION (WGS84):");
+                    println!("   Latitude:  {:.8}°", geodetic_pos.lat);
+                    println!("   Longitude: {:.8}°", geodetic_pos.lon);
+                    println!("   Depth:     {:.3} meters", geodetic_pos.depth);
+                    println!("📊 COMPUTATION DETAILS:");
+                    println!("   Anchors used: {}", anchor_messages.len());
+                    println!("   Computation time: {} ms", current_time);
+                    
+                    // Calculate distances to each anchor for verification
+                    println!("📏 DISTANCES TO ANCHORS:");
+                    for anchor in &anchor_messages {
+                        let dx = (geodetic_pos.lat - anchor.position.lat) * 111320.0; // Rough conversion to meters
+                        let dy = (geodetic_pos.lon - anchor.position.lon) * 111320.0 * geodetic_pos.lat.to_radians().cos();
+                        let dz = geodetic_pos.depth - anchor.position.depth;
+                        let distance = (dx*dx + dy*dy + dz*dz).sqrt();
+                        println!("   To anchor {}: {:.2} meters", anchor.id, distance);
+                    }
+                    
+                    positioning_attempts += 1;
+                    if positioning_attempts >= max_attempts {
+                        println!("\n🏁 Reached maximum positioning attempts ({}), stopping.", max_attempts);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    println!("\n❌ POSITIONING FAILED:");
+                    println!("   Error: {}", e);
+                    println!("   Available anchors: {}", anchor_messages.len());
+                    println!("   This might be due to:");
+                    println!("   - Insufficient anchor coverage");
+                    println!("   - Poor anchor geometry");
+                    println!("   - Timing synchronization issues");
+                    println!("   - Message parsing errors");
+                }
+            }
+            
+            last_update = std::time::Instant::now();
+        } else if anchor_messages.len() < 3 {
+            // Show waiting status periodically
+            if positioning_attempts == 0 || last_update.elapsed().as_secs() >= 5 {
+                println!("\n⏳ WAITING FOR MORE ANCHORS:");
+                println!("   Current: {} anchors (need at least 3)", anchor_messages.len());
+                println!("   Time waiting: {:.1}s", last_update.elapsed().as_secs_f64());
+                if positioning_attempts == 0 {
+                    last_update = std::time::Instant::now(); // Reset timer for first status
+                }
+            }
+        }
+        
+        // Periodic status update
+        if last_status_log.elapsed().as_secs() >= 15 {
+            println!("\n📊 PERIODIC STATUS UPDATE:");
+            println!("   Runtime: {:.1}s", last_status_log.elapsed().as_secs_f64());
+            println!("   Active anchors: {}", anchor_messages.len());
+            println!("   Positioning attempts: {}", positioning_attempts);
+            println!("   Connection status: {}", if transceiver.is_connected() { "Connected ✅" } else { "Disconnected ❌" });
+            last_status_log = std::time::Instant::now();
+        }
+        
+        // Small delay to prevent busy waiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    
+    println!("Virtual receiver stopped.");
+    Ok(())
 }
 
 /// Demonstration of comprehensive error handling and graceful degradation
@@ -1507,103 +1756,100 @@ pub fn performance_optimization_demo() {
     println!("\n=== PERFORMANCE OPTIMIZATION DEMO COMPLETE ===");
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
     
-    // Check for embedded demo mode
-    if args.len() == 2 && args[1] == "--embedded-demo" {
-        embedded_positioning_demo();
-        return Ok(());
-    }
-    
-    // Check for performance monitoring demo mode
-    if args.len() == 2 && args[1] == "--performance-demo" {
-        performance_optimization_demo();
-        return Ok(());
-    }
-    
-    // Check for accuracy validation mode
-    if args.len() == 2 && args[1] == "--accuracy-validation" {
-        println!("Running comprehensive accuracy validation tests...");
-        let validator = accuracy_validation::AccuracyValidator::new().with_trials(200);
-        let results = validator.run_validation();
-        let report = validator.generate_report(&results);
-        println!("{}", report);
-        
-        // Check if minimum requirements are met
-        let passing_configs = results.iter().filter(|r| r.meets_requirement).count();
-        if passing_configs == 0 {
-            eprintln!("ERROR: No configurations meet the 1.0m accuracy requirement!");
-            return Err("Accuracy validation failed".into());
+    match cli.command {
+        Some(ReceiverCommand::Virtual { channel, id, update_interval, max_attempts }) => {
+            run_virtual_receiver(channel, id, update_interval, max_attempts).await
         }
         
-        println!("Accuracy validation completed successfully!");
-        return Ok(());
-    }
-    
-    // Check for message parsing demo mode
-    if args.len() == 2 && args[1] == "--message-parsing-demo" {
-        message_parsing_system_demo();
-        return Ok(());
-    }
-    
-    // Check for transceiver communication demo mode
-    if args.len() == 2 && args[1] == "--transceiver-demo" {
-        transceiver_communication_demo();
-        return Ok(());
-    }
-    
-    // Check for advanced positioning demo mode
-    if args.len() == 2 && args[1] == "--advanced-positioning-demo" {
-        advanced_positioning_demo();
-        return Ok(());
-    }
-    
-    // Check for error handling and graceful degradation demo mode
-    if args.len() == 2 && args[1] == "--error-handling-demo" {
-        error_handling_and_degradation_demo();
-        return Ok(());
-    }
-    
-    if args.len() != 3 {
-        eprintln!(
-            "Usage: {} <json_file> <receiver_timestamp_ms>",
-            args.get(0).map_or("trilateration", |s| s.as_str())
-        );
-        eprintln!("   or: {} --embedded-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
-        eprintln!("   or: {} --performance-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
-        eprintln!("   or: {} --accuracy-validation", args.get(0).map_or("trilateration", |s| s.as_str()));
-        eprintln!("   or: {} --message-parsing-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
-        eprintln!("   or: {} --transceiver-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
-        eprintln!("   or: {} --advanced-positioning-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
-        eprintln!("   or: {} --error-handling-demo", args.get(0).map_or("trilateration", |s| s.as_str()));
-        return Err("Invalid arguments".into());
-    }
+        Some(ReceiverCommand::Json { json_file, receiver_timestamp }) => {
+            let json_data = std::fs::read_to_string(&json_file)?;
+            let anchors_json: AnchorsJson = serde_json::from_str(&json_data)?;
 
-    let json_path = &args[1];
-    let receiver_time_ms = args[2].parse::<u64>()?;
-
-    let json_data = std::fs::read_to_string(json_path)?;
-    let anchors_json: AnchorsJson = serde_json::from_str(&json_data)?;
-
-    match trilaterate(&anchors_json.anchors, receiver_time_ms) {
-        Ok((geodetic_pos, local_pos)) => {
-            println!(
-                "Estimated receiver position (local END): x={:.2} m east, y={:.2} m north, z={:.2} m down",
-                local_pos.x, local_pos.y, local_pos.z
-            );
-            println!(
-                "Estimated receiver position (lat/lon/depth): lat={:.6}, lon={:.6}, depth={:.2} m",
-                geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
-            );
+            match trilaterate(&anchors_json.anchors, receiver_timestamp) {
+                Ok((geodetic_pos, local_pos)) => {
+                    println!(
+                        "Estimated receiver position (local END): x={:.2} m east, y={:.2} m north, z={:.2} m down",
+                        local_pos.x, local_pos.y, local_pos.z
+                    );
+                    println!(
+                        "Estimated receiver position (lat/lon/depth): lat={:.6}, lon={:.6}, depth={:.2} m",
+                        geodetic_pos.lat, geodetic_pos.lon, geodetic_pos.depth
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error during trilateration: {}", e);
+                    return Err(e.into());
+                }
+            }
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("Error during trilateration: {}", e);
-            return Err(e.into());
+        
+        Some(ReceiverCommand::EmbeddedDemo) => {
+            embedded_positioning_demo();
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::PerformanceDemo) => {
+            performance_optimization_demo();
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::AccuracyValidation) => {
+            println!("Running comprehensive accuracy validation tests...");
+            let validator = accuracy_validation::AccuracyValidator::new().with_trials(200);
+            let results = validator.run_validation();
+            let report = validator.generate_report(&results);
+            println!("{}", report);
+            
+            // Check if minimum requirements are met
+            let passing_configs = results.iter().filter(|r| r.meets_requirement).count();
+            if passing_configs == 0 {
+                eprintln!("ERROR: No configurations meet the 1.0m accuracy requirement!");
+                return Err("Accuracy validation failed".into());
+            }
+            
+            println!("Accuracy validation completed successfully!");
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::MessageParsingDemo) => {
+            message_parsing_system_demo();
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::TransceiverDemo) => {
+            transceiver_communication_demo();
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::AdvancedPositioningDemo) => {
+            advanced_positioning_demo();
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::ErrorHandlingDemo) => {
+            error_handling_and_degradation_demo();
+            Ok(())
+        }
+        
+        Some(ReceiverCommand::VirtualReceiverDemo) => {
+            virtual_receiver_demo::virtual_receiver_demo().await
+        }
+        
+        None => {
+            // Default behavior - show help
+            println!("Use --help to see available commands");
+            println!("Examples:");
+            println!("  receiver virtual --channel my_channel");
+            println!("  receiver json anchors.json 1723111199990");
+            println!("  receiver embedded-demo");
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

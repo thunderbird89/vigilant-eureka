@@ -1,0 +1,43 @@
+beacon_id = "b46dce22-0ccc-4dbf-9240-aa33a4bda4c6"
+transmission_interval_ms = 5000
+message_version = "V3"
+
+[gps_config]
+acquisition_timeout_s = 60
+update_interval_s = 5
+min_satellite_count = 4
+accuracy_threshold_m = 10.0
+cold_start_timeout_s = 120
+
+[power_config]
+low_battery_threshold_percent = 20.0
+critical_battery_threshold_percent = 10.0
+emergency_battery_threshold_percent = 5.0
+power_save_mode_threshold_percent = 30.0
+charging_enabled = true
+solar_charging_enabled = true
+temperature_min_c = -20.0
+temperature_max_c = 60.0
+voltage_min_v = 3.0
+voltage_max_v = 4.199999809265137
+current_max_ma = 2000.0
+monitoring_interval_ms = 1000
+
+[communication_config]
+connection_interval_hours = 6
+retry_attempts = 3
+retry_backoff_ms = 1000
+max_retry_interval_hours = 6
+connection_timeout_s = 30
+data_compression_enabled = true
+server_endpoint = "https://beacon-api.example.com"
+auth_token = ""
+
+[emergency_config]
+emergency_transmission_interval_ms = 5000
+emergency_power_threshold_percent = 5.0
+emergency_gps_timeout_s = 300
+emergency_communication_timeout_s = 1800
+auto_shutdown_enabled = true
+emergency_message_count = 10
+shutdown_delay_s = 30

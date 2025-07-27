@@ -54,10 +54,8 @@ impl SignalHandler {
     #[cfg(unix)]
     async fn run_unix_signals(&self) -> Result<()> {
         // Set up signal handling for SIGTERM, SIGINT, and SIGHUP
-        let signals = Signals::new(&[SIGTERM, SIGINT, SIGHUP])
+        let mut signals = Signals::new(&[SIGTERM, SIGINT, SIGHUP])
             .context("Failed to create signal handler")?;
-        
-        let mut signals = signals.fuse();
         
         while let Some(signal) = signals.next().await {
             match signal {

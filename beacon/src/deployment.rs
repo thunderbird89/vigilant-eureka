@@ -12,7 +12,8 @@ use tracing::{info, warn, error};
 use uuid::Uuid;
 use rand;
 
-use crate::beacon_controller::{BeaconConfig, BeaconStatus, MessageVersion, EmergencyConfig};
+use shared_positioning::{BeaconConfig, BeaconMessageVersion as MessageVersion, EmergencyConfig};
+use crate::beacon_controller::BeaconStatus;
 use crate::config::{ConfigManager, validate_config};
 use shared_positioning::{
     GpsConfig, PowerConfig, CommunicationConfig, GeodeticPosition,
@@ -137,15 +138,7 @@ impl ConfigGenerator {
     
     /// Generate a single beacon configuration
     pub fn generate_beacon_config(&self, beacon_id: Option<Uuid>) -> BeaconConfig {
-        BeaconConfig {
-            beacon_id: beacon_id.unwrap_or_else(Uuid::new_v4),
-            transmission_interval_ms: self.template.transmission_interval_ms,
-            message_version: self.template.message_version.clone(),
-            gps_config: self.template.gps_config.clone(),
-            power_config: self.template.power_config.clone(),
-            communication_config: self.template.communication_config.clone(),
-            emergency_config: self.template.emergency_config.clone(),
-        }
+        BeaconConfig::new(beacon_id.unwrap_or_else(Uuid::new_v4))
     }
     
     /// Generate multiple beacon configurations for a deployment
@@ -209,20 +202,20 @@ impl ConfigGenerator {
         match site.deployment_type {
             DeploymentType::Surface => {
                 // Surface beacons have better GPS reception
-                config.gps_config.acquisition_timeout_s = 60;
-                config.gps_config.accuracy_threshold_m = 2.0;
+                config.gps.acquisition_timeout_s = 60;
+                config.gps.accuracy_threshold_m = 2.0;
             }
             DeploymentType::Anchored { depth_m } => {
                 // Anchored beacons may have intermittent GPS
                 if depth_m > 10.0 {
-                    config.gps_config.acquisition_timeout_s = 120;
-                    config.gps_config.accuracy_threshold_m = 5.0;
+                    config.gps.acquisition_timeout_s = 120;
+                    config.gps.accuracy_threshold_m = 5.0;
                 }
             }
             DeploymentType::Drifting => {
                 // Drifting beacons need frequent GPS updates
-                config.gps_config.update_interval_s = 30;
-                config.gps_config.accuracy_threshold_m = 3.0;
+                config.gps.update_interval_s = 30;
+                config.gps.accuracy_threshold_m = 3.0;
             }
         }
         
@@ -230,14 +223,14 @@ impl ConfigGenerator {
         let temp_range = &site.environmental_conditions.temperature_range_c;
         if temp_range.0 < 0.0 || temp_range.1 > 40.0 {
             // Extreme temperatures affect battery performance
-            config.power_config.low_battery_threshold_percent = 25.0;
-            config.power_config.critical_battery_threshold_percent = 15.0;
+            config.power.low_battery_threshold_percent = 25.0;
+            config.power.critical_battery_threshold_percent = 15.0;
         }
         
         // Adjust transmission interval based on wave conditions
         if site.environmental_conditions.wave_height_m > 2.0 {
             // Rough seas may affect transmission reliability
-            config.transmission_interval_ms = 3000; // More frequent transmissions
+            config.transmission.interval_ms = 3000; // More frequent transmissions
         }
     }
     
@@ -246,10 +239,10 @@ impl ConfigGenerator {
         let base_life_days = 30; // Base 30 days
         
         // Adjust for transmission interval
-        let tx_factor = 5000.0 / config.transmission_interval_ms as f32;
+        let tx_factor = 5000.0 / config.transmission.interval_ms as f32;
         
         // Adjust for GPS update frequency
-        let gps_factor = config.gps_config.update_interval_s as f32 / 30.0;
+        let gps_factor = config.gps.update_interval_s as f32 / 30.0;
         
         // Adjust for environmental conditions
         let env_factor = if site.environmental_conditions.temperature_range_c.0 < 0.0 {
@@ -612,7 +605,7 @@ impl DeploymentValidator {
         let duration = start_time.elapsed();
         
         // Simulate GPS test results
-        let passed = config.gps_config.acquisition_timeout_s >= 30;
+        let passed = config.gps.acquisition_timeout_s >= 30;
         
         ValidationTest {
             test_name: "GPS Functionality".to_string(),
@@ -635,8 +628,8 @@ impl DeploymentValidator {
         let duration = start_time.elapsed();
         
         // Check power configuration
-        let passed = config.power_config.low_battery_threshold_percent > 
-                    config.power_config.critical_battery_threshold_percent;
+        let passed = config.power.low_battery_threshold_percent > 
+                    config.power.critical_battery_threshold_percent;
         
         ValidationTest {
             test_name: "Power System".to_string(),
@@ -659,7 +652,7 @@ impl DeploymentValidator {
         let duration = start_time.elapsed();
         
         // Check communication configuration
-        let passed = config.communication_config.connection_timeout_s >= 30;
+        let passed = config.communication.connection_timeout_s >= 30;
         
         ValidationTest {
             test_name: "Communication".to_string(),
@@ -682,8 +675,8 @@ impl DeploymentValidator {
         let duration = start_time.elapsed();
         
         // Check transmission configuration
-        let passed = config.transmission_interval_ms >= 1000 && 
-                    config.transmission_interval_ms <= 60000;
+        let passed = config.transmission.interval_ms >= 1000 && 
+                    config.transmission.interval_ms <= 60000;
         
         ValidationTest {
             test_name: "Transmission".to_string(),

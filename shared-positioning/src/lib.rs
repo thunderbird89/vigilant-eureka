@@ -14,6 +14,7 @@ pub mod transmission_manager;
 pub mod environmental_monitor;
 pub mod hardware_monitor;
 pub mod reliability_monitor;
+pub mod virtual_communication;
 
 // Re-export commonly used types for convenience
 pub use message_parser::{
@@ -94,4 +95,7 @@ pub use reliability_monitor::{
     ReliabilityMonitor, ReliabilityMetrics, ComponentReliability, ReliabilityThresholds,
     ReliabilityReport, FailureEvent, MaintenanceRecommendation as ReliabilityMaintenanceRecommendation,
     ReliabilityError, HealthTrend, ThresholdViolation as ReliabilityThresholdViolation
+};
+pub use virtual_communication::{
+    VirtualMessage, IpcMessage
 };

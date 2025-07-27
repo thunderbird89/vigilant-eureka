@@ -18,6 +18,7 @@ use crate::{
     ExportFormat,
     MovementPattern,
     IpcServer,
+    config::{EmulatorConfigManager, EmulatorBeaconConfig},
 };
 
 /// Persistent beacon data for saving/loading state
@@ -28,6 +29,12 @@ pub struct PersistentBeaconData {
     pub config: BeaconConfig,
     pub movement_pattern: MovementPattern,
     pub intended_running: bool, // Whether the beacon should be running (persistent intent)
+    /// Configuration file path if loaded from file
+    pub config_file_path: Option<std::path::PathBuf>,
+    /// Configuration checksum for integrity verification
+    pub config_checksum: Option<String>,
+    /// Last configuration update timestamp
+    pub config_updated_at: Option<u64>,
 }
 
 /// Emulator state that can be persisted
@@ -45,6 +52,7 @@ pub struct EmulatorManager {
     current_channel: String,
     state_file_path: PathBuf,
     ipc_server: Option<IpcServer>,
+    config_manager: EmulatorConfigManager,
 }
 
 impl EmulatorManager {
@@ -52,6 +60,7 @@ impl EmulatorManager {
         let communication_space = Arc::new(RwLock::new(VirtualCommunicationSpace::new()));
         let current_channel = channel_name.to_string();
         let state_file_path = Self::get_default_state_file_path();
+        let config_manager = EmulatorConfigManager::new();
         
         Self {
             virtual_beacons: HashMap::new(),
@@ -60,6 +69,7 @@ impl EmulatorManager {
             current_channel,
             state_file_path,
             ipc_server: None,
+            config_manager,
         }
     }
     
@@ -100,7 +110,9 @@ impl EmulatorManager {
         
         let beacon_config = config.unwrap_or_else(|| {
             // Create default config for emulator
-            BeaconConfig::new(beacon_id)
+            let mut default_config = self.create_default_beacon_config();
+            default_config.beacon_id = beacon_id;
+            default_config
         });
         
         let virtual_channel = {
@@ -134,6 +146,38 @@ impl EmulatorManager {
     ) -> Result<Uuid, EmulatorError> {
         let config = self.load_beacon_config(config_path).await?;
         self.create_beacon(id, position, Some(config)).await
+    }
+    
+    /// Create a new virtual beacon from an emulator configuration file
+    pub async fn create_beacon_from_emulator_config(
+        &mut self,
+        config_path: &Path,
+    ) -> Result<Uuid, EmulatorError> {
+        let emulator_config = self.load_emulator_beacon_config(config_path).await?;
+        
+        // Use the beacon ID from the config or generate a new one
+        let beacon_id = if emulator_config.beacon_config.beacon_id.is_nil() {
+            Uuid::new_v4()
+        } else {
+            emulator_config.beacon_config.beacon_id
+        };
+        
+        // Create the beacon
+        let created_id = self.create_beacon(
+            Some(beacon_id),
+            emulator_config.initial_position,
+            Some(emulator_config.beacon_config),
+        ).await?;
+        
+        // Set the movement pattern
+        self.update_beacon_movement_pattern(created_id, emulator_config.movement_pattern).await?;
+        
+        // Auto-start if configured
+        if emulator_config.auto_start {
+            self.start_beacon(created_id).await?;
+        }
+        
+        Ok(created_id)
     }
     
     /// Start a virtual beacon by ID
@@ -440,46 +484,54 @@ impl EmulatorManager {
         Err(EmulatorError::ExportError("Log export not yet implemented".to_string()))
     }
     
-    /// Load beacon configuration from a TOML file
+    /// Load beacon configuration from a file with automatic format detection and validation
     pub async fn load_beacon_config(&self, config_path: &Path) -> Result<BeaconConfig, EmulatorError> {
-        let config_content = tokio::fs::read_to_string(config_path).await?;
-        let config: BeaconConfig = toml::from_str(&config_content)?;
-        
-        // Validate configuration for emulator use
-        self.validate_emulator_config(&config)?;
-        
-        Ok(config)
+        self.config_manager.load_beacon_config(config_path).await
     }
     
-    /// Validate that a beacon configuration is suitable for emulation
-    fn validate_emulator_config(&self, config: &BeaconConfig) -> Result<(), EmulatorError> {
-        // Ensure transmission interval is reasonable for emulation
-        if config.transmission.interval_ms < 100 {
-            return Err(EmulatorError::ConfigError(
-                "Transmission interval too short for emulation (minimum 100ms)".to_string()
-            ));
-        }
-        
-        if config.transmission.interval_ms > 300_000 {
-            return Err(EmulatorError::ConfigError(
-                "Transmission interval too long for emulation (maximum 5 minutes)".to_string()
-            ));
-        }
-        
-        // Validate power settings are reasonable
-        if config.power.low_battery_threshold_percent <= 0.0 {
-            return Err(EmulatorError::ConfigError(
-                "Low battery threshold must be greater than zero".to_string()
-            ));
-        }
-        
-        if config.power.critical_battery_threshold_percent >= config.power.low_battery_threshold_percent {
-            return Err(EmulatorError::ConfigError(
-                "Critical battery threshold must be less than low battery threshold".to_string()
-            ));
-        }
-        
-        Ok(())
+    /// Load emulator-specific beacon configuration with extended metadata
+    pub async fn load_emulator_beacon_config(&self, config_path: &Path) -> Result<EmulatorBeaconConfig, EmulatorError> {
+        self.config_manager.load_emulator_beacon_config(config_path).await
+    }
+    
+    /// Save beacon configuration to a file
+    pub async fn save_beacon_config(&self, config: &BeaconConfig, config_path: &Path) -> Result<(), EmulatorError> {
+        self.config_manager.save_beacon_config(config, config_path).await
+    }
+    
+    /// Save emulator-specific beacon configuration
+    pub async fn save_emulator_beacon_config(&self, config: &EmulatorBeaconConfig, config_path: &Path) -> Result<(), EmulatorError> {
+        self.config_manager.save_emulator_beacon_config(config, config_path).await
+    }
+    
+    /// Create a default beacon configuration template for emulator use
+    pub fn create_default_beacon_config(&self) -> BeaconConfig {
+        EmulatorConfigManager::create_default_beacon_config()
+    }
+    
+    /// Create a default emulator beacon configuration
+    pub fn create_default_emulator_config(&self, beacon_id: Option<Uuid>, position: GeodeticPosition) -> EmulatorBeaconConfig {
+        EmulatorConfigManager::create_default_emulator_config(beacon_id, position)
+    }
+    
+    /// Validate beacon configuration for emulator use
+    pub fn validate_emulator_config(&self, config: &BeaconConfig) -> Result<(), EmulatorError> {
+        self.config_manager.validate_emulator_config(config)
+    }
+    
+    /// Validate emulator-specific configuration
+    pub fn validate_emulator_specific_config(&self, config: &EmulatorBeaconConfig) -> Result<(), EmulatorError> {
+        self.config_manager.validate_emulator_specific_config(config)
+    }
+    
+    /// Generate configuration template files
+    pub async fn generate_config_template(&self, template_path: &Path, format: crate::config::ConfigFormat) -> Result<(), EmulatorError> {
+        self.config_manager.generate_config_template(template_path, format).await
+    }
+    
+    /// Generate emulator configuration template
+    pub async fn generate_emulator_config_template(&self, template_path: &Path, position: GeodeticPosition, format: crate::config::ConfigFormat) -> Result<(), EmulatorError> {
+        self.config_manager.generate_emulator_config_template(template_path, position, format).await
     }
     
     /// Get current communication channel name
@@ -506,9 +558,15 @@ impl EmulatorManager {
             beacon_data.push(PersistentBeaconData {
                 id: *id,
                 position: status.position,
-                config: status.config,
+                config: status.config.clone(),
                 movement_pattern: status.movement_pattern,
                 intended_running: status.is_running,
+                config_file_path: None, // TODO: Track config file path if loaded from file
+                config_checksum: None, // TODO: Calculate config checksum
+                config_updated_at: Some(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()),
             });
         }
         

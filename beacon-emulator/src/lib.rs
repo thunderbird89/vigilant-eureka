@@ -4,6 +4,7 @@
 //! the underwater positioning system without requiring physical hardware.
 
 pub mod cli;
+pub mod config;
 pub mod error;
 pub mod emulator;
 pub mod virtual_beacon;
@@ -30,6 +31,7 @@ pub use scenario::ScenarioType;
 pub use export::ExportFormat;
 pub use ipc_server::IpcServer;
 pub use monitor::{BeaconMonitor, MonitorConfig, BeaconHealthIndicator, HealthStatus};
+pub use config::{EmulatorConfigManager, EmulatorBeaconConfig, ValidationRules, ConfigFormat};
 
 // Integration tests
 #[cfg(test)]

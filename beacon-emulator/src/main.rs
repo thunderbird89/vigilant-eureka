@@ -1,13 +1,15 @@
 use beacon_emulator::{
-    cli::{Cli, EmulatorCommand, ListFormat},
+    cli::{Cli, EmulatorCommand, ListFormat, ConfigFormat},
     EmulatorManager, EmulatorError, MovementPattern, MovementPatternValidator,
     daemon_protocol::{DaemonCommand, DaemonResponse, is_daemon_running, send_daemon_command},
     daemon_server::DaemonServer,
     monitor::{BeaconMonitor, MonitorConfig},
+    config::{EmulatorConfigManager, EmulatorBeaconConfig},
 };
 use clap::Parser;
 use shared_positioning::{GeodeticPosition, BeaconConfig};
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use tokio::time::sleep;
 use tracing::{info, error, warn, debug};
@@ -212,6 +214,18 @@ async fn execute_command(
         
         EmulatorCommand::Daemon { status_interval, auto_start, background } => {
             execute_daemon_command(emulator, status_interval, auto_start, background).await
+        }
+        
+        EmulatorCommand::GenerateTemplate { output, format, emulator: is_emulator, lat, lon, depth } => {
+            execute_generate_template_command(emulator, output, format, is_emulator, lat, lon, depth).await
+        }
+        
+        EmulatorCommand::ValidateConfig { config, emulator: is_emulator, verbose } => {
+            execute_validate_config_command(emulator, config, is_emulator, verbose).await
+        }
+        
+        EmulatorCommand::ConvertConfig { input, output, validate } => {
+            execute_convert_config_command(emulator, input, output, validate).await
         }
     }
 }
@@ -820,6 +834,12 @@ async fn execute_daemon_client_command(command: EmulatorCommand) -> Result<(), B
         EmulatorCommand::Daemon { .. } => {
             return Err("Daemon command should not reach here".into());
         }
+        
+        EmulatorCommand::GenerateTemplate { .. } |
+        EmulatorCommand::ValidateConfig { .. } |
+        EmulatorCommand::ConvertConfig { .. } => {
+            return Err("Configuration commands are handled locally and don't require daemon communication".into());
+        }
     };
     
     let response = send_daemon_command(daemon_command).await?;
@@ -1042,4 +1062,119 @@ async fn display_live_dashboard(emulator_arc: &std::sync::Arc<tokio::sync::Mutex
     }
     
     io::stdout().flush().unwrap();
+}
+
+/// Execute generate template command
+async fn execute_generate_template_command(
+    emulator: &EmulatorManager,
+    output: PathBuf,
+    format: ConfigFormat,
+    is_emulator: bool,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    depth: f64,
+) -> Result<(), EmulatorError> {
+    if is_emulator {
+        let lat = lat.ok_or_else(|| EmulatorError::ConfigError("Latitude required for emulator template".to_string()))?;
+        let lon = lon.ok_or_else(|| EmulatorError::ConfigError("Longitude required for emulator template".to_string()))?;
+        let position = GeodeticPosition { latitude: lat, longitude: lon, depth };
+        
+        emulator.generate_emulator_config_template(&output, position, format.into()).await?;
+        println!("✅ Generated emulator configuration template: {}", output.display());
+    } else {
+        emulator.generate_config_template(&output, format.into()).await?;
+        println!("✅ Generated beacon configuration template: {}", output.display());
+    }
+    
+    Ok(())
+}
+
+/// Execute validate config command
+async fn execute_validate_config_command(
+    emulator: &EmulatorManager,
+    config: PathBuf,
+    is_emulator: bool,
+    verbose: bool,
+) -> Result<(), EmulatorError> {
+    if !config.exists() {
+        return Err(EmulatorError::ConfigError(
+            format!("Configuration file not found: {}", config.display())
+        ));
+    }
+    
+    if is_emulator {
+        match emulator.load_emulator_beacon_config(&config).await {
+            Ok(emulator_config) => {
+                if verbose {
+                    println!("✅ Emulator configuration is valid");
+                    println!("   Beacon ID: {}", emulator_config.beacon_config.beacon_id);
+                    println!("   Position: {:.6}, {:.6}, {:.1}m", 
+                           emulator_config.initial_position.latitude,
+                           emulator_config.initial_position.longitude,
+                           emulator_config.initial_position.depth);
+                    println!("   Movement: {:?}", emulator_config.movement_pattern);
+                    println!("   Auto-start: {}", emulator_config.auto_start);
+                    println!("   Schema version: {}", emulator_config.metadata.schema_version);
+                } else {
+                    println!("✅ Emulator configuration is valid");
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Emulator configuration validation failed: {}", e);
+                return Err(e);
+            }
+        }
+    } else {
+        match emulator.load_beacon_config(&config).await {
+            Ok(beacon_config) => {
+                if verbose {
+                    println!("✅ Beacon configuration is valid");
+                    println!("   Beacon ID: {}", beacon_config.beacon_id);
+                    println!("   Transmission interval: {}ms", beacon_config.transmission.interval_ms);
+                    println!("   Message version: {:?}", beacon_config.transmission.message_version);
+                    println!("   Power level: {}", beacon_config.transmission.power_level);
+                    println!("   Schema version: {}", beacon_config.metadata.schema_version);
+                } else {
+                    println!("✅ Beacon configuration is valid");
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Beacon configuration validation failed: {}", e);
+                return Err(e);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Execute convert config command
+async fn execute_convert_config_command(
+    emulator: &EmulatorManager,
+    input: PathBuf,
+    output: PathBuf,
+    validate: bool,
+) -> Result<(), EmulatorError> {
+    if !input.exists() {
+        return Err(EmulatorError::ConfigError(
+            format!("Input configuration file not found: {}", input.display())
+        ));
+    }
+    
+    // Load configuration from input file
+    let config = emulator.load_beacon_config(&input).await?;
+    
+    // Validate if requested
+    if validate {
+        emulator.validate_emulator_config(&config)?;
+        println!("✅ Configuration validated successfully");
+    }
+    
+    // Save to output file (format determined by extension)
+    emulator.save_beacon_config(&config, &output).await?;
+    
+    println!("✅ Converted configuration from {} to {}", 
+           input.display(), output.display());
+    
+    Ok(())
 }

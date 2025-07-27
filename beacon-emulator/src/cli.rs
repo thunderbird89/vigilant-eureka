@@ -482,6 +482,114 @@ EXAMPLES:
         #[arg(long, help = "Run in background mode with minimal output")]
         background: bool,
     },
+    
+    /// Generate a configuration template file
+    #[command(long_about = r#"
+Generate a configuration template file with default values.
+
+This creates a template configuration file that can be customized for
+specific beacon requirements. The template includes all available
+configuration options with sensible defaults for emulator use.
+
+EXAMPLES:
+    # Generate TOML template
+    beacon-emulator generate-template --output template.toml
+
+    # Generate JSON template
+    beacon-emulator generate-template --output template.json --format json
+
+    # Generate emulator-specific template
+    beacon-emulator generate-template --output emulator.json \
+                                     --emulator --lat 32.0 --lon 45.0
+"#)]
+    GenerateTemplate {
+        /// Output file path
+        #[arg(short, long, help = "Output template file path")]
+        output: PathBuf,
+        
+        /// Template format
+        #[arg(short, long, default_value = "toml", help = "Template file format")]
+        format: ConfigFormat,
+        
+        /// Generate emulator-specific template
+        #[arg(long, help = "Generate emulator-specific configuration template")]
+        emulator: bool,
+        
+        /// Latitude for emulator template (required if --emulator is used)
+        #[arg(long, help = "Latitude for emulator template", required_if_eq("emulator", "true"), value_parser = validate_latitude)]
+        lat: Option<f64>,
+        
+        /// Longitude for emulator template (required if --emulator is used)
+        #[arg(long, help = "Longitude for emulator template", required_if_eq("emulator", "true"), value_parser = validate_longitude)]
+        lon: Option<f64>,
+        
+        /// Depth for emulator template
+        #[arg(long, default_value = "0.0", help = "Depth for emulator template", value_parser = validate_depth)]
+        depth: f64,
+    },
+    
+    /// Validate a configuration file
+    #[command(long_about = r#"
+Validate a beacon configuration file for emulator compatibility.
+
+This command checks that a configuration file is valid and suitable
+for use with the beacon emulator. It validates both the file format
+and the configuration values against emulator requirements.
+
+EXAMPLES:
+    # Validate a TOML configuration
+    beacon-emulator validate-config --config beacon.toml
+
+    # Validate with detailed output
+    beacon-emulator validate-config --config beacon.toml --verbose
+
+    # Validate emulator-specific configuration
+    beacon-emulator validate-config --config emulator-beacon.json --emulator
+"#)]
+    ValidateConfig {
+        /// Configuration file to validate
+        #[arg(short, long, help = "Configuration file path")]
+        config: PathBuf,
+        
+        /// Validate as emulator-specific configuration
+        #[arg(long, help = "Validate as emulator-specific configuration")]
+        emulator: bool,
+        
+        /// Show detailed validation output
+        #[arg(short, long, help = "Show detailed validation information")]
+        verbose: bool,
+    },
+    
+    /// Convert configuration between formats
+    #[command(long_about = r#"
+Convert a configuration file between different formats (TOML, JSON, YAML).
+
+This command reads a configuration file in one format and writes it
+in another format, preserving all configuration values.
+
+EXAMPLES:
+    # Convert TOML to JSON
+    beacon-emulator convert-config --input beacon.toml --output beacon.json
+
+    # Convert JSON to YAML
+    beacon-emulator convert-config --input beacon.json --output beacon.yaml
+
+    # Convert with validation
+    beacon-emulator convert-config --input beacon.toml --output beacon.json --validate
+"#)]
+    ConvertConfig {
+        /// Input configuration file
+        #[arg(short, long, help = "Input configuration file path")]
+        input: PathBuf,
+        
+        /// Output configuration file
+        #[arg(short, long, help = "Output configuration file path")]
+        output: PathBuf,
+        
+        /// Validate configuration during conversion
+        #[arg(long, help = "Validate configuration during conversion")]
+        validate: bool,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -510,6 +618,32 @@ pub enum ListFormat {
 impl Default for ListFormat {
     fn default() -> Self {
         Self::Table
+    }
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ConfigFormat {
+    #[value(name = "toml")]
+    Toml,
+    #[value(name = "json")]
+    Json,
+    #[value(name = "yaml")]
+    Yaml,
+}
+
+impl Default for ConfigFormat {
+    fn default() -> Self {
+        Self::Toml
+    }
+}
+
+impl From<ConfigFormat> for crate::config::ConfigFormat {
+    fn from(format: ConfigFormat) -> Self {
+        match format {
+            ConfigFormat::Toml => crate::config::ConfigFormat::Toml,
+            ConfigFormat::Json => crate::config::ConfigFormat::Json,
+            ConfigFormat::Yaml => crate::config::ConfigFormat::Yaml,
+        }
     }
 }
 
@@ -599,3 +733,4 @@ fn validate_duration(s: &str) -> Result<u64, String> {
     }
     Ok(duration)
 }
+

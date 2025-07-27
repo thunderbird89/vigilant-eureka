@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use uuid::Uuid;
 use tokio::task::JoinHandle;
 use tokio::sync::RwLock;
@@ -23,6 +24,7 @@ use crate::{
     LogMetadata,
     LogFilter,
     config::{EmulatorConfigManager, EmulatorBeaconConfig},
+    performance::{PerformanceMonitor, PerformanceOptimizer, PerformanceConfig, PerformanceMetrics},
 };
 
 /// Persistent beacon data for saving/loading state
@@ -58,6 +60,8 @@ pub struct EmulatorManager {
     ipc_server: Option<IpcServer>,
     config_manager: EmulatorConfigManager,
     logger: Arc<BeaconLogger>,
+    performance_monitor: Arc<PerformanceMonitor>,
+    performance_optimizer: Arc<PerformanceOptimizer>,
 }
 
 impl EmulatorManager {
@@ -67,6 +71,8 @@ impl EmulatorManager {
         let state_file_path = Self::get_default_state_file_path();
         let config_manager = EmulatorConfigManager::new();
         let logger = Arc::new(BeaconLogger::new());
+        let performance_monitor = Arc::new(PerformanceMonitor::new());
+        let performance_optimizer = Arc::new(PerformanceOptimizer::new(performance_monitor.clone()));
         
         Self {
             virtual_beacons: HashMap::new(),
@@ -77,6 +83,8 @@ impl EmulatorManager {
             ipc_server: None,
             config_manager,
             logger,
+            performance_monitor,
+            performance_optimizer,
         }
     }
     
@@ -820,6 +828,23 @@ impl EmulatorManager {
             comm_space.list_channels()
         };
         
+        // Update performance monitor with current counts
+        self.performance_monitor.update_beacon_count(running_beacons).await;
+        self.performance_monitor.update_channel_count(channels.len()).await;
+        
+        // Update channel queue depths
+        let mut queue_depths = HashMap::new();
+        {
+            let comm_space = self.communication_space.read().await;
+            for channel_name in &channels {
+                if let Some(channel) = comm_space.get_channel(channel_name) {
+                    let count = channel.get_message_count().await;
+                    queue_depths.insert(channel_name.clone(), count);
+                }
+            }
+        }
+        self.performance_monitor.update_channel_queue_depths(queue_depths).await;
+        
         EmulatorManagerStats {
             total_beacons,
             running_beacons,
@@ -901,6 +926,164 @@ impl EmulatorManager {
                 server_space.get_or_create_channel(&channel_name);
             }
         }
+    }
+    
+    /// Get performance metrics
+    pub async fn get_performance_metrics(&self) -> PerformanceMetrics {
+        // Update current counts before getting metrics
+        let running_beacons = self.get_active_beacon_count();
+        let channels = {
+            let comm_space = self.communication_space.read().await;
+            comm_space.list_channels()
+        };
+        
+        self.performance_monitor.update_beacon_count(running_beacons).await;
+        self.performance_monitor.update_channel_count(channels.len()).await;
+        
+        self.performance_monitor.get_metrics().await
+    }
+    
+    /// Get performance optimizer
+    pub fn get_performance_optimizer(&self) -> Arc<PerformanceOptimizer> {
+        self.performance_optimizer.clone()
+    }
+    
+    /// Get performance monitor
+    pub fn get_performance_monitor(&self) -> Arc<PerformanceMonitor> {
+        self.performance_monitor.clone()
+    }
+    
+    /// Update performance configuration
+    pub async fn update_performance_config(&self, config: PerformanceConfig) -> Result<(), EmulatorError> {
+        self.performance_optimizer.update_config(config).await;
+        Ok(())
+    }
+    
+    /// Get performance configuration
+    pub async fn get_performance_config(&self) -> PerformanceConfig {
+        self.performance_optimizer.get_config().await
+    }
+    
+    /// Run performance optimization
+    pub async fn optimize_performance(&self) -> Result<Vec<String>, EmulatorError> {
+        self.performance_optimizer.optimize_if_needed().await
+    }
+    
+    /// Get performance recommendations
+    pub async fn get_performance_recommendations(&self) -> Vec<String> {
+        self.performance_optimizer.get_recommendations().await
+    }
+    
+    /// Enable or disable automatic performance optimization
+    pub async fn set_auto_optimization(&self, enabled: bool) -> Result<(), EmulatorError> {
+        let mut config = self.performance_optimizer.get_config().await;
+        config.auto_optimization_enabled = enabled;
+        self.performance_optimizer.update_config(config).await;
+        Ok(())
+    }
+    
+    /// Set global message rate limit
+    pub async fn set_global_rate_limit(&self, rate: Option<f64>) -> Result<(), EmulatorError> {
+        let mut config = self.performance_optimizer.get_config().await;
+        config.global_rate_limit = rate;
+        self.performance_optimizer.update_config(config).await;
+        Ok(())
+    }
+    
+    /// Set per-beacon message rate limit
+    pub async fn set_per_beacon_rate_limit(&self, rate: Option<f64>) -> Result<(), EmulatorError> {
+        let mut config = self.performance_optimizer.get_config().await;
+        config.per_beacon_rate_limit = rate;
+        self.performance_optimizer.update_config(config).await;
+        Ok(())
+    }
+    
+    /// Enable or disable collision avoidance
+    pub async fn set_collision_avoidance(&self, enabled: bool) -> Result<(), EmulatorError> {
+        let mut config = self.performance_optimizer.get_config().await;
+        config.collision_avoidance_enabled = enabled;
+        self.performance_optimizer.update_config(config).await;
+        Ok(())
+    }
+    
+    /// Cleanup old messages from channels to free memory
+    pub async fn cleanup_old_messages(&self, max_age_seconds: u64) -> Result<usize, EmulatorError> {
+        let cutoff_time = SystemTime::now() - std::time::Duration::from_secs(max_age_seconds);
+        let mut total_cleaned = 0;
+        
+        let comm_space = self.communication_space.read().await;
+        let channels = comm_space.list_channels();
+        
+        for channel_name in channels {
+            if let Some(channel) = comm_space.get_channel(&channel_name) {
+                // Get messages before cleanup
+                let before_count = channel.get_message_count().await;
+                
+                // For now, we'll just clear all messages if any are older than cutoff
+                // A more sophisticated implementation would selectively remove old messages
+                let messages = channel.get_messages_since(cutoff_time).await;
+                if messages.len() < before_count {
+                    // Some messages are older than cutoff, clear the channel
+                    channel.clear_messages().await;
+                    total_cleaned += before_count;
+                    
+                    tracing::info!("Cleaned {} old messages from channel '{}'", before_count, channel_name);
+                }
+            }
+        }
+        
+        Ok(total_cleaned)
+    }
+    
+    /// Get memory usage breakdown
+    pub async fn get_memory_breakdown(&self) -> Result<crate::performance::MemoryBreakdown, EmulatorError> {
+        let memory_tracker = self.performance_monitor.get_memory_tracker();
+        Ok(memory_tracker.get_memory_breakdown().await)
+    }
+    
+    /// Force garbage collection and memory cleanup
+    pub async fn force_memory_cleanup(&self) -> Result<(), EmulatorError> {
+        // Cleanup old messages
+        let config = self.performance_optimizer.get_config().await;
+        if config.message_queue_cleanup_enabled {
+            let cleanup_interval = config.message_queue_cleanup_interval_s;
+            let cleaned = self.cleanup_old_messages(cleanup_interval).await?;
+            if cleaned > 0 {
+                tracing::info!("Force cleanup removed {} old messages", cleaned);
+            }
+        }
+        
+        // Update memory tracking
+        let memory_tracker = self.performance_monitor.get_memory_tracker();
+        
+        // Re-estimate beacon memory usage
+        for (beacon_id, beacon) in &self.virtual_beacons {
+            let estimated_size = Self::estimate_beacon_memory_usage(beacon);
+            memory_tracker.track_beacon_memory(*beacon_id, estimated_size).await;
+        }
+        
+        // Re-estimate channel memory usage
+        let comm_space = self.communication_space.read().await;
+        for channel_name in comm_space.list_channels() {
+            if let Some(channel) = comm_space.get_channel(&channel_name) {
+                let message_count = channel.get_message_count().await;
+                let estimated_size = message_count * 256; // Rough estimate: 256 bytes per message
+                memory_tracker.track_channel_memory(channel_name, estimated_size as u64).await;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Estimate memory usage for a beacon
+    fn estimate_beacon_memory_usage(beacon: &VirtualBeacon) -> u64 {
+        // Rough estimate based on beacon components
+        let base_size = 1024; // Base beacon structure
+        let config_size = 512; // Configuration data
+        let stats_size = 256; // Statistics
+        let buffer_size = 1024; // Message buffers and other data
+        
+        base_size + config_size + stats_size + buffer_size
     }
 }
 

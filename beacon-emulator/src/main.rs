@@ -264,6 +264,35 @@ async fn execute_command(
         EmulatorCommand::GenerateScenario { template, output, beacon_count, area_size, duration, include_receiver } => {
             execute_generate_scenario_command(emulator, template, output, beacon_count, area_size, duration, include_receiver).await
         }
+        
+        EmulatorCommand::Performance { detailed, export, reset } => {
+            execute_performance_command(emulator, detailed, export, reset).await
+        }
+        
+        EmulatorCommand::Optimize { 
+            global_rate_limit, 
+            per_beacon_rate_limit, 
+            collision_avoidance, 
+            collision_window, 
+            auto_optimization, 
+            show_config, 
+            recommendations 
+        } => {
+            execute_optimize_command(
+                emulator, 
+                global_rate_limit, 
+                per_beacon_rate_limit, 
+                collision_avoidance, 
+                collision_window, 
+                auto_optimization, 
+                show_config, 
+                recommendations
+            ).await
+        }
+        
+        EmulatorCommand::Memory { breakdown, cleanup, gc, warning_threshold, stats } => {
+            execute_memory_command(emulator, breakdown, cleanup, gc, warning_threshold, stats).await
+        }
     }
 }
 
@@ -1107,7 +1136,10 @@ async fn execute_daemon_client_command(command: EmulatorCommand) -> Result<(), B
         EmulatorCommand::ConvertConfig { .. } |
         EmulatorCommand::Batch { .. } |
         EmulatorCommand::Reset { .. } |
-        EmulatorCommand::GenerateScenario { .. } => {
+        EmulatorCommand::GenerateScenario { .. } |
+        EmulatorCommand::Performance { .. } |
+        EmulatorCommand::Optimize { .. } |
+        EmulatorCommand::Memory { .. } => {
             return Err("These commands are handled locally and don't require daemon communication".into());
         }
     };
@@ -1445,6 +1477,292 @@ async fn execute_convert_config_command(
     
     println!("✅ Converted configuration from {} to {}", 
            input.display(), output.display());
+    
+    Ok(())
+}
+
+/// Execute performance command
+async fn execute_performance_command(
+    emulator: &mut EmulatorManager,
+    detailed: bool,
+    export: Option<PathBuf>,
+    reset: bool,
+) -> Result<(), EmulatorError> {
+    if reset {
+        let monitor = emulator.get_performance_monitor();
+        monitor.reset_metrics().await;
+        println!("Performance metrics reset successfully");
+        return Ok(());
+    }
+    
+    let metrics = emulator.get_performance_metrics().await;
+    
+    if let Some(export_path) = export {
+        // Export metrics to JSON file
+        let json = serde_json::to_string_pretty(&metrics)
+            .map_err(|e| EmulatorError::SerializationError(e))?;
+        tokio::fs::write(&export_path, json).await
+            .map_err(|e| EmulatorError::IoError(e))?;
+        println!("Performance metrics exported to: {}", export_path.display());
+        return Ok(());
+    }
+    
+    // Display performance metrics
+    println!("🚀 Performance Metrics");
+    println!("═══════════════════════");
+    println!("System Status:");
+    println!("  Active Beacons: {}", metrics.active_beacon_count);
+    println!("  Active Channels: {}", metrics.active_channel_count);
+    println!("  Uptime: {:.1}s", metrics.uptime.as_secs_f64());
+    println!();
+    
+    println!("Message Transmission:");
+    println!("  Total Messages: {}", metrics.total_messages_transmitted);
+    println!("  Failed Messages: {}", metrics.total_transmission_failures);
+    println!("  Success Rate: {:.1}%", 
+        if metrics.total_messages_transmitted > 0 {
+            100.0 * (metrics.total_messages_transmitted - metrics.total_transmission_failures) as f64 / metrics.total_messages_transmitted as f64
+        } else {
+            100.0
+        }
+    );
+    println!("  Avg Rate: {:.1} msg/s", metrics.avg_transmission_rate);
+    println!("  Peak Rate: {:.1} msg/s", metrics.peak_transmission_rate);
+    println!();
+    
+    println!("Resource Usage:");
+    println!("  Memory: {:.1} MB", metrics.estimated_memory_usage as f64 / (1024.0 * 1024.0));
+    println!("  Peak Memory: {:.1} MB", metrics.peak_memory_usage as f64 / (1024.0 * 1024.0));
+    println!("  CPU Usage: {:.1}%", metrics.estimated_cpu_usage * 100.0);
+    println!();
+    
+    println!("Rate Limiting:");
+    println!("  Messages Rate Limited: {}", metrics.rate_limiting_stats.messages_rate_limited);
+    println!("  Collision Avoidance: {}", metrics.rate_limiting_stats.collision_avoidance_count);
+    println!("  Avg Delay: {:.1}ms", metrics.rate_limiting_stats.avg_rate_limit_delay_ms);
+    
+    if detailed {
+        println!();
+        println!("Channel Queue Depths:");
+        for (channel, depth) in &metrics.channel_queue_depths {
+            println!("  {}: {} messages", channel, depth);
+        }
+        
+        // Get memory breakdown
+        if let Ok(memory_breakdown) = emulator.get_memory_breakdown().await {
+            println!();
+            println!("Memory Breakdown:");
+            println!("  Total: {:.1} MB", memory_breakdown.total_usage as f64 / (1024.0 * 1024.0));
+            println!("  Beacons: {:.1} MB ({} beacons)", 
+                memory_breakdown.beacon_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.beacon_count
+            );
+            println!("  Channels: {:.1} MB ({} channels)", 
+                memory_breakdown.channel_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.channel_count
+            );
+        }
+        
+        // Get performance recommendations
+        let recommendations = emulator.get_performance_recommendations().await;
+        if !recommendations.is_empty() {
+            println!();
+            println!("Recommendations:");
+            for rec in recommendations {
+                println!("  • {}", rec);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Execute optimize command
+async fn execute_optimize_command(
+    emulator: &mut EmulatorManager,
+    global_rate_limit: Option<f64>,
+    per_beacon_rate_limit: Option<f64>,
+    collision_avoidance: Option<bool>,
+    collision_window: Option<u64>,
+    auto_optimization: Option<bool>,
+    show_config: bool,
+    recommendations: bool,
+) -> Result<(), EmulatorError> {
+    if show_config {
+        let config = emulator.get_performance_config().await;
+        println!("🔧 Performance Configuration");
+        println!("═══════════════════════════");
+        println!("Rate Limiting:");
+        println!("  Global Rate Limit: {:?} msg/s", config.global_rate_limit);
+        println!("  Per-Beacon Rate Limit: {:?} msg/s", config.per_beacon_rate_limit);
+        println!();
+        println!("Collision Avoidance:");
+        println!("  Enabled: {}", config.collision_avoidance_enabled);
+        println!("  Window: {}ms", config.collision_window_ms);
+        println!();
+        println!("Memory Management:");
+        println!("  Warning Threshold: {:.1} MB", config.memory_warning_threshold as f64 / (1024.0 * 1024.0));
+        println!("  Queue Cleanup: {}", config.message_queue_cleanup_enabled);
+        println!("  Cleanup Interval: {}s", config.message_queue_cleanup_interval_s);
+        println!("  Max Queue Size: {}", config.max_message_queue_size);
+        println!();
+        println!("Optimization:");
+        println!("  Auto Optimization: {}", config.auto_optimization_enabled);
+        println!("  Max Concurrent Beacons: {}", config.max_concurrent_beacons);
+        println!("  CPU Warning Threshold: {:.1}%", config.cpu_warning_threshold * 100.0);
+        return Ok(());
+    }
+    
+    if recommendations {
+        let recs = emulator.get_performance_recommendations().await;
+        println!("💡 Performance Recommendations");
+        println!("═══════════════════════════════");
+        if recs.is_empty() {
+            println!("No recommendations at this time. System is performing well!");
+        } else {
+            for (i, rec) in recs.iter().enumerate() {
+                println!("{}. {}", i + 1, rec);
+            }
+        }
+        return Ok(());
+    }
+    
+    // Apply configuration changes
+    let mut config = emulator.get_performance_config().await;
+    let mut changes = Vec::new();
+    
+    if let Some(rate) = global_rate_limit {
+        config.global_rate_limit = Some(rate);
+        changes.push(format!("Global rate limit set to {:.1} msg/s", rate));
+    }
+    
+    if let Some(rate) = per_beacon_rate_limit {
+        config.per_beacon_rate_limit = Some(rate);
+        changes.push(format!("Per-beacon rate limit set to {:.1} msg/s", rate));
+    }
+    
+    if let Some(enabled) = collision_avoidance {
+        config.collision_avoidance_enabled = enabled;
+        changes.push(format!("Collision avoidance {}", if enabled { "enabled" } else { "disabled" }));
+    }
+    
+    if let Some(window) = collision_window {
+        config.collision_window_ms = window;
+        changes.push(format!("Collision window set to {}ms", window));
+    }
+    
+    if let Some(enabled) = auto_optimization {
+        config.auto_optimization_enabled = enabled;
+        changes.push(format!("Auto optimization {}", if enabled { "enabled" } else { "disabled" }));
+    }
+    
+    if !changes.is_empty() {
+        emulator.update_performance_config(config).await?;
+        println!("✅ Performance configuration updated:");
+        for change in changes {
+            println!("  • {}", change);
+        }
+        
+        // Run optimization to apply changes
+        let optimizations = emulator.optimize_performance().await?;
+        if !optimizations.is_empty() {
+            println!();
+            println!("⚠️  Optimization warnings:");
+            for opt in optimizations {
+                println!("  • {}", opt);
+            }
+        }
+    } else {
+        println!("No configuration changes specified. Use --help for available options.");
+    }
+    
+    Ok(())
+}
+
+/// Execute memory command
+async fn execute_memory_command(
+    emulator: &mut EmulatorManager,
+    breakdown: bool,
+    cleanup: Option<u64>,
+    gc: bool,
+    warning_threshold: Option<u64>,
+    stats: bool,
+) -> Result<(), EmulatorError> {
+    if let Some(max_age) = cleanup {
+        let cleaned = emulator.cleanup_old_messages(max_age).await?;
+        println!("🧹 Cleaned up {} old messages (older than {}s)", cleaned, max_age);
+        return Ok(());
+    }
+    
+    if gc {
+        emulator.force_memory_cleanup().await?;
+        println!("🗑️  Garbage collection completed");
+        return Ok(());
+    }
+    
+    if let Some(threshold) = warning_threshold {
+        let mut config = emulator.get_performance_config().await;
+        config.memory_warning_threshold = threshold;
+        emulator.update_performance_config(config).await?;
+        println!("⚠️  Memory warning threshold set to {:.1} MB", threshold as f64 / (1024.0 * 1024.0));
+        return Ok(());
+    }
+    
+    if breakdown || stats {
+        let memory_breakdown = emulator.get_memory_breakdown().await?;
+        let metrics = emulator.get_performance_metrics().await;
+        
+        println!("💾 Memory Usage");
+        println!("═══════════════");
+        println!("Current Usage: {:.1} MB", memory_breakdown.total_usage as f64 / (1024.0 * 1024.0));
+        println!("Peak Usage: {:.1} MB", metrics.peak_memory_usage as f64 / (1024.0 * 1024.0));
+        println!();
+        
+        if breakdown {
+            println!("Breakdown:");
+            println!("  Beacons: {:.1} MB ({} beacons)", 
+                memory_breakdown.beacon_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.beacon_count
+            );
+            println!("  Channels: {:.1} MB ({} channels)", 
+                memory_breakdown.channel_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.channel_count
+            );
+            
+            if memory_breakdown.beacon_count > 0 {
+                println!("  Avg per beacon: {:.1} KB", 
+                    memory_breakdown.beacon_usage as f64 / (1024.0 * memory_breakdown.beacon_count as f64)
+                );
+            }
+            
+            if memory_breakdown.channel_count > 0 {
+                println!("  Avg per channel: {:.1} KB", 
+                    memory_breakdown.channel_usage as f64 / (1024.0 * memory_breakdown.channel_count as f64)
+                );
+            }
+        }
+        
+        if stats {
+            println!();
+            println!("Statistics:");
+            println!("  Total Messages: {}", metrics.total_messages_transmitted);
+            println!("  Message Queue Depth: {}", 
+                metrics.channel_queue_depths.values().sum::<usize>()
+            );
+            
+            let config = emulator.get_performance_config().await;
+            println!("  Warning Threshold: {:.1} MB", config.memory_warning_threshold as f64 / (1024.0 * 1024.0));
+            
+            let usage_percent = (memory_breakdown.total_usage as f64 / config.memory_warning_threshold as f64) * 100.0;
+            println!("  Usage vs Threshold: {:.1}%", usage_percent);
+            
+            if usage_percent > 80.0 {
+                println!("  ⚠️  Warning: Memory usage is high!");
+            }
+        }
+    } else {
+        println!("No memory operation specified. Use --help for available options.");
+    }
     
     Ok(())
 }

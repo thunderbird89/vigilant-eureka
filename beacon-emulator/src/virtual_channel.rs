@@ -71,14 +71,14 @@ impl VirtualChannel {
     }
     
     pub async fn broadcast_message(&self, message: VirtualMessage) -> Result<(), EmulatorError> {
-        // Log message
+        // Log message with optimized locking
         {
             let mut log = self.message_log.lock().await;
             log.push(message.clone());
             
-            // Keep only recent messages (last 10000)
-            if log.len() > 10000 {
-                log.drain(0..1000);
+            // Optimized cleanup: only clean when we exceed threshold significantly
+            if log.len() > 12000 {
+                log.drain(0..2000); // Remove more messages at once to reduce cleanup frequency
             }
         }
         
@@ -86,6 +86,20 @@ impl VirtualChannel {
         let _ = self.sender.send(message);
         
         Ok(())
+    }
+    
+    /// Broadcast message with performance monitoring
+    pub async fn broadcast_message_with_monitoring(
+        &self, 
+        message: VirtualMessage,
+        performance_monitor: Option<&crate::performance::PerformanceMonitor>
+    ) -> Result<(), EmulatorError> {
+        // Record transmission in performance monitor
+        if let Some(monitor) = performance_monitor {
+            monitor.record_message_transmission().await;
+        }
+        
+        self.broadcast_message(message).await
     }
     
     pub fn subscribe(&self) -> broadcast::Receiver<VirtualMessage> {

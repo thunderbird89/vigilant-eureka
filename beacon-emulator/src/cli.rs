@@ -764,6 +764,123 @@ EXAMPLES:
         #[arg(long, help = "Include virtual receiver configuration")]
         include_receiver: bool,
     },
+    
+    /// Show performance metrics and system resource usage
+    #[command(long_about = r#"
+Display current performance metrics including message transmission rates,
+memory usage, CPU utilization, and rate limiting statistics.
+
+EXAMPLES:
+    # Show current performance metrics
+    beacon-emulator performance
+
+    # Show detailed performance breakdown
+    beacon-emulator performance --detailed
+
+    # Export performance metrics to JSON
+    beacon-emulator performance --export metrics.json
+"#)]
+    Performance {
+        /// Show detailed performance breakdown
+        #[arg(short, long, help = "Show detailed performance information")]
+        detailed: bool,
+        
+        /// Export metrics to file
+        #[arg(long, help = "Export performance metrics to JSON file")]
+        export: Option<PathBuf>,
+        
+        /// Reset performance counters
+        #[arg(long, help = "Reset all performance counters")]
+        reset: bool,
+    },
+    
+    /// Configure performance optimization settings
+    #[command(long_about = r#"
+Configure performance optimization settings including rate limiting,
+collision avoidance, and memory management.
+
+EXAMPLES:
+    # Set global rate limit to 500 messages/second
+    beacon-emulator optimize --global-rate-limit 500
+
+    # Set per-beacon rate limit to 5 messages/second
+    beacon-emulator optimize --per-beacon-rate-limit 5
+
+    # Enable collision avoidance with 50ms window
+    beacon-emulator optimize --collision-avoidance --collision-window 50
+
+    # Show current optimization settings
+    beacon-emulator optimize --show-config
+"#)]
+    Optimize {
+        /// Set global message rate limit (messages per second)
+        #[arg(long, help = "Global rate limit in messages per second")]
+        global_rate_limit: Option<f64>,
+        
+        /// Set per-beacon message rate limit (messages per second)
+        #[arg(long, help = "Per-beacon rate limit in messages per second")]
+        per_beacon_rate_limit: Option<f64>,
+        
+        /// Enable or disable collision avoidance
+        #[arg(long, help = "Enable collision avoidance")]
+        collision_avoidance: Option<bool>,
+        
+        /// Set collision avoidance window (milliseconds)
+        #[arg(long, help = "Collision avoidance window in milliseconds")]
+        collision_window: Option<u64>,
+        
+        /// Enable or disable automatic optimization
+        #[arg(long, help = "Enable automatic performance optimization")]
+        auto_optimization: Option<bool>,
+        
+        /// Show current optimization configuration
+        #[arg(long, help = "Show current optimization settings")]
+        show_config: bool,
+        
+        /// Get performance recommendations
+        #[arg(long, help = "Get performance optimization recommendations")]
+        recommendations: bool,
+    },
+    
+    /// Memory management and cleanup operations
+    #[command(long_about = r#"
+Perform memory management operations including cleanup of old messages,
+memory usage analysis, and garbage collection.
+
+EXAMPLES:
+    # Show memory usage breakdown
+    beacon-emulator memory --breakdown
+
+    # Clean up messages older than 1 hour
+    beacon-emulator memory --cleanup 3600
+
+    # Force garbage collection
+    beacon-emulator memory --gc
+
+    # Set memory warning threshold to 50MB
+    beacon-emulator memory --warning-threshold 52428800
+"#)]
+    Memory {
+        /// Show memory usage breakdown
+        #[arg(short, long, help = "Show detailed memory usage breakdown")]
+        breakdown: bool,
+        
+        /// Clean up messages older than specified seconds
+        #[arg(long, help = "Clean up messages older than N seconds")]
+        cleanup: Option<u64>,
+        
+        /// Force garbage collection
+        #[arg(long, help = "Force garbage collection and memory cleanup")]
+        gc: bool,
+        
+        /// Set memory warning threshold (bytes)
+        #[arg(long, help = "Set memory warning threshold in bytes")]
+        warning_threshold: Option<u64>,
+        
+        /// Show memory statistics over time
+        #[arg(long, help = "Show memory usage statistics")]
+        stats: bool,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]

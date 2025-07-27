@@ -19,6 +19,7 @@ pub mod ipc_server;
 pub mod monitor;
 pub mod batch;
 pub mod scenario_templates;
+pub mod performance;
 
 #[cfg(test)]
 pub mod test_data_models;
@@ -36,6 +37,7 @@ pub use logging::{BeaconLogger, BeaconLogEntry, LogEntryType, LogMetadata, LogFi
 pub use ipc_server::IpcServer;
 pub use monitor::{BeaconMonitor, MonitorConfig, BeaconHealthIndicator, HealthStatus};
 pub use config::{EmulatorConfigManager, EmulatorBeaconConfig, ValidationRules, ConfigFormat};
+pub use performance::{PerformanceMonitor, PerformanceOptimizer, PerformanceConfig, PerformanceMetrics, MemoryBreakdown, RateLimitingStats};
 
 // Integration tests
 #[cfg(test)]

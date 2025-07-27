@@ -305,6 +305,7 @@ impl VirtualBeacon {
                         &virtual_channel,
                         &logger,
                         &channel_name,
+                        None, // Rate limiter not available in this context
                     ).await {
                         Ok(()) => {
                             stats.messages_sent += 1;
@@ -351,7 +352,24 @@ impl VirtualBeacon {
         virtual_channel: &VirtualChannel,
         logger: &std::sync::Arc<BeaconLogger>,
         channel_name: &str,
+        rate_limiter: Option<&crate::performance::RateLimiter>,
     ) -> Result<(), EmulatorError> {
+        // Check rate limiting if available
+        if let Some(limiter) = rate_limiter {
+            match limiter.can_transmit(beacon_id, channel_name).await {
+                Ok(true) => {
+                    // Transmission allowed, continue
+                }
+                Err(delay) => {
+                    // Rate limited, wait for the specified delay
+                    tokio::time::sleep(delay).await;
+                }
+                Ok(false) => {
+                    // Should not happen with current implementation
+                    return Err(EmulatorError::ChannelError("Transmission not allowed".to_string()));
+                }
+            }
+        }
         // Determine message version from config
         let message_version = match config.transmission.message_version {
             shared_positioning::BeaconMessageVersion::V1 => MessageVersion::V1,

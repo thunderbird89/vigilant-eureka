@@ -32,7 +32,13 @@ use shared_positioning::{
     HardwareMonitor, HardwareMonitorConfig, HardwareMonitorStats, DiagnosticResult,
     ComponentHealth, RecommendedAction, HardwareFaultError,
     ReliabilityMonitor, ReliabilityMetrics, ReliabilityThresholds, ReliabilityReport,
-    FailureEvent, ReliabilityError, HealthTrend
+    FailureEvent, ReliabilityError, HealthTrend,
+    // Advanced reliability and fault tolerance imports
+    WatchdogTimer, WatchdogConfig, WatchdogEvent, WatchdogStats, WatchdogError,
+    ConfigBackupManager, ConfigBackupError, BackupManagerConfig, BackupType, BackupStatistics,
+    EmergencyBeaconSystem, EmergencyBeaconError, EmergencyType, EmergencySeverity,
+    EmergencyBeaconId, EmergencyContact, BeaconCapabilities, BeaconCertification,
+    EmergencyBeaconConfig, EmergencyPriority
 };
 
 
@@ -80,9 +86,47 @@ impl std::fmt::Display for SystemError {
 
 impl std::error::Error for SystemError {}
 
-/// Emergency types that can trigger emergency handling
+/// Predictive maintenance alert
 #[derive(Debug, Clone)]
-pub enum EmergencyType {
+pub struct MaintenanceAlert {
+    pub alert_id: String,
+    pub component: String,
+    pub alert_type: MaintenanceAlertType,
+    pub severity: MaintenanceSeverity,
+    pub predicted_failure_time: Option<SystemTime>,
+    pub confidence: f64,
+    pub description: String,
+    pub recommended_actions: Vec<String>,
+    pub created_at: SystemTime,
+}
+
+/// Types of maintenance alerts
+#[derive(Debug, Clone)]
+pub enum MaintenanceAlertType {
+    PerformanceDegradation,
+    ComponentWear,
+    PredictedFailure,
+    CalibrationRequired,
+    EnvironmentalStress,
+    PowerEfficiencyLoss,
+}
+
+/// Maintenance alert severity levels
+#[derive(Debug, Clone)]
+pub enum MaintenanceSeverity {
+    Info,       // Informational, no immediate action required
+    Low,        // Schedule maintenance at next opportunity
+    Medium,     // Plan maintenance within a week
+    High,       // Immediate attention recommended
+    Critical,   // Urgent maintenance required
+}
+
+// Use EmergencyType from shared library
+pub use shared_positioning::EmergencyType as BeaconEmergencyType;
+
+/// Local emergency types for beacon controller
+#[derive(Debug, Clone)]
+pub enum LocalEmergencyType {
     BatteryDepleted,
     HardwareFault,
     CommunicationLost,
@@ -133,7 +177,7 @@ pub struct BeaconStatus {
 enum ControlMessage {
     Start,
     Stop,
-    Emergency(EmergencyType),
+    Emergency(LocalEmergencyType),
     UpdateConfig(BeaconConfig),
     GetStatus,
     Shutdown,
@@ -178,6 +222,13 @@ where
     // System reliability monitoring
     reliability_monitor: ReliabilityMonitor,
     last_reliability_report: Option<SystemTime>,
+    // Advanced reliability and fault tolerance features
+    watchdog_timer: WatchdogTimer,
+    config_backup_manager: ConfigBackupManager,
+    emergency_beacon_system: EmergencyBeaconSystem,
+    last_config_backup: Option<SystemTime>,
+    system_health_score: f64,
+    predictive_maintenance_alerts: Vec<MaintenanceAlert>,
 }
 
 impl<G, P, C, T> BeaconController<G, P, C, T>
@@ -216,7 +267,7 @@ where
         diagnostic_system.add_output_handler(Box::new(file_handler));
         
         Ok(Self {
-            config,
+            config: config.clone(),
             operational_state: OperationalState::Initializing,
             gps_manager,
             power_manager,
@@ -246,9 +297,132 @@ where
             // Initialize reliability monitoring
             reliability_monitor: ReliabilityMonitor::new(ReliabilityThresholds::default()),
             last_reliability_report: None,
+            // Initialize advanced reliability and fault tolerance features
+            watchdog_timer: Self::create_watchdog_timer(&config)?,
+            config_backup_manager: Self::create_config_backup_manager()?,
+            emergency_beacon_system: Self::create_emergency_beacon_system(&config)?,
+            last_config_backup: None,
+            system_health_score: 1.0,
+            predictive_maintenance_alerts: Vec::new(),
         })
     }
     
+    /// Create watchdog timer for system monitoring
+    fn create_watchdog_timer(config: &BeaconConfig) -> Result<WatchdogTimer, BeaconError> {
+        let watchdog_config = WatchdogConfig {
+            enabled: config.hardware.watchdog_config.enabled,
+            system_timeout_ms: (config.hardware.watchdog_config.timeout_s * 1000) as u64,
+            component_timeouts: {
+                let mut timeouts = std::collections::HashMap::new();
+                timeouts.insert("gps".to_string(), (config.gps.acquisition_timeout_s * 1000) as u64);
+                timeouts.insert("transceiver".to_string(), 10000);
+                timeouts.insert("power".to_string(), 5000);
+                timeouts.insert("communication".to_string(), (config.communication.connection_timeout_s * 1000) as u64);
+                timeouts
+            },
+            max_recovery_attempts: 3,
+            auto_recovery_enabled: true,
+            emergency_shutdown_enabled: config.emergency.emergency_mode_enabled,
+            heartbeat_interval_ms: 5000,
+        };
+
+        WatchdogTimer::new(watchdog_config).map_err(|e| BeaconError::SystemError {
+            error_type: SystemErrorType::InitializationFailed,
+            system_state: BeaconSystemState {
+                operational_state: "Initializing".to_string(),
+                uptime_ms: 0,
+                last_gps_fix: None,
+                last_transmission: None,
+                last_communication: None,
+                active_threads: 1,
+                error_count: 0,
+            },
+            resource_usage: ResourceUsageSnapshot {
+                memory_usage_bytes: 0,
+                memory_total_bytes: 1024 * 1024, // 1MB
+                cpu_usage_percent: 0.0,
+                flash_usage_bytes: 0,
+                flash_total_bytes: 4 * 1024 * 1024, // 4MB
+                active_connections: 0,
+            },
+        })
+    }
+
+    /// Create configuration backup manager
+    fn create_config_backup_manager() -> Result<ConfigBackupManager, BeaconError> {
+        let backup_config = BackupManagerConfig::default();
+        
+        ConfigBackupManager::new(backup_config).map_err(|e| BeaconError::SystemError {
+            error_type: SystemErrorType::InitializationFailed,
+            system_state: BeaconSystemState {
+                operational_state: "Initializing".to_string(),
+                uptime_ms: 0,
+                last_gps_fix: None,
+                last_transmission: None,
+                last_communication: None,
+                active_threads: 1,
+                error_count: 0,
+            },
+            resource_usage: ResourceUsageSnapshot {
+                memory_usage_bytes: 0,
+                memory_total_bytes: 1024 * 1024, // 1MB
+                cpu_usage_percent: 0.0,
+                flash_usage_bytes: 0,
+                flash_total_bytes: 4 * 1024 * 1024, // 4MB
+                active_connections: 0,
+            },
+        })
+    }
+
+    /// Create emergency beacon system
+    fn create_emergency_beacon_system(config: &BeaconConfig) -> Result<EmergencyBeaconSystem, BeaconError> {
+        let emergency_config = EmergencyBeaconConfig {
+            emergency_transmission_interval_ms: config.emergency.emergency_interval_ms as u64,
+            distress_transmission_interval_ms: (config.emergency.emergency_interval_ms / 2) as u64,
+            max_emergency_transmission_attempts: 10,
+            emergency_transmission_power: 255,
+            auto_emergency_activation: config.emergency.auto_recovery_enabled,
+            emergency_protocols: vec![],  // Would be configured based on deployment
+            identification_broadcast_interval_ms: 300000,
+            emergency_contact_info: EmergencyContact {
+                primary_contact: "Emergency Operations Center".to_string(),
+                emergency_phone: "+1-800-EMERGENCY".to_string(),
+                emergency_email: "emergency@example.com".to_string(),
+                backup_contact: None,
+                maritime_authority: None,
+                coast_guard_contact: None,
+            },
+        };
+
+        let beacon_id = EmergencyBeaconId {
+            beacon_uuid: config.beacon_id,
+            emergency_id: format!("EMRG_{}", config.beacon_id),
+            beacon_type: "UNDERWATER_POSITIONING".to_string(),
+            deployment_location: "Unknown".to_string(),  // Would be configured
+            owner_organization: "Beacon Operator".to_string(),
+            contact_information: emergency_config.emergency_contact_info.clone(),
+            capabilities: BeaconCapabilities {
+                max_transmission_power: 255,
+                emergency_battery_hours: 48.0,
+                distress_signal_range_km: 10.0,
+                supported_emergency_protocols: vec!["STANDARD_DISTRESS".to_string()],
+                has_gps: true,
+                has_satellite_communication: false,
+                has_cellular_communication: true,
+                environmental_sensors: vec!["temperature".to_string(), "pressure".to_string()],
+            },
+            certification: BeaconCertification {
+                certification_authority: "Maritime Safety Authority".to_string(),
+                certification_number: format!("CERT_{}", config.beacon_id),
+                certification_expiry: SystemTime::now() + Duration::from_secs(365 * 24 * 3600),
+                emergency_protocols_certified: vec!["STANDARD_DISTRESS".to_string()],
+                last_inspection: Some(SystemTime::now()),
+            },
+        };
+
+        Ok(EmergencyBeaconSystem::new(emergency_config, beacon_id))
+    }
+
     /// Validate beacon configuration
     fn validate_config(config: &BeaconConfig) -> Result<(), BeaconError> {
         if config.transmission.interval_ms < 1000 || config.transmission.interval_ms > 60000 {
@@ -335,9 +509,47 @@ where
         self.running = true;
         self.start_time = SystemTime::now();
         
+        // Start advanced reliability and fault tolerance systems
+        self.start_advanced_reliability_systems()?;
+        
         // Start main control loop
         self.run_control_loop()?;
         
+        Ok(())
+    }
+
+    /// Start advanced reliability and fault tolerance systems
+    fn start_advanced_reliability_systems(&mut self) -> Result<(), BeaconError> {
+        // Start watchdog timer
+        if let Err(e) = self.watchdog_timer.start() {
+            self.log_warning(&format!("Failed to start watchdog timer: {}", e));
+        }
+
+        // Create initial configuration backup
+        if let Err(e) = self.create_configuration_backup(BackupType::PreUpdate, "Initial startup backup".to_string()) {
+            self.log_warning(&format!("Failed to create initial config backup: {}", e));
+        }
+
+        // Initialize system health score
+        self.system_health_score = self.calculate_system_health_score();
+
+        self.log_info("Advanced reliability and fault tolerance systems started");
+        Ok(())
+    }
+
+    /// Stop advanced reliability and fault tolerance systems
+    fn stop_advanced_reliability_systems(&mut self) -> Result<(), BeaconError> {
+        // Stop watchdog timer
+        if let Err(e) = self.watchdog_timer.stop() {
+            self.log_warning(&format!("Failed to stop watchdog timer: {}", e));
+        }
+
+        // Create final configuration backup
+        if let Err(e) = self.create_configuration_backup(BackupType::Emergency, "Shutdown backup".to_string()) {
+            self.log_warning(&format!("Failed to create shutdown backup: {}", e));
+        }
+
+        self.log_info("Advanced reliability and fault tolerance systems stopped");
         Ok(())
     }
     
@@ -349,6 +561,9 @@ where
         
         self.log_info("Stopping beacon controller");
         self.running = false;
+        
+        // Stop advanced reliability systems
+        self.stop_advanced_reliability_systems()?;
         
         // Stop GPS acquisition
         self.gps_manager.stop()?;
@@ -504,11 +719,69 @@ where
     }
     
     /// Handle emergency situations
-    pub fn handle_emergency(&mut self, emergency_type: EmergencyType) -> Result<(), BeaconError> {
+    pub fn handle_emergency(&mut self, emergency_type: LocalEmergencyType) -> Result<(), BeaconError> {
         self.log_error(&format!("Emergency triggered: {:?}", emergency_type));
         
+        // Convert to emergency beacon emergency type
+        let beacon_emergency_type = match emergency_type {
+            LocalEmergencyType::BatteryDepleted => {
+                let battery_status = self.power_manager.get_battery_status().unwrap_or_else(|_| BatteryStatus::new(0.0, 0.0, 0.0, 0.0));
+                BeaconEmergencyType::PowerCritical {
+                    battery_percent: battery_status.capacity_percent,
+                    estimated_time_remaining: Duration::from_secs(3600), // Estimate 1 hour
+                }
+            }
+            LocalEmergencyType::HardwareFault => {
+                BeaconEmergencyType::SystemFailure {
+                    component: HardwareComponent::PowerManagement, // Use available component
+                    severity: EmergencySeverity::Critical,
+                }
+            }
+            LocalEmergencyType::CommunicationLost => {
+                BeaconEmergencyType::CommunicationLost {
+                    duration: Duration::from_secs(300), // Assume 5 minutes
+                }
+            }
+            LocalEmergencyType::GpsSignalLost => {
+                BeaconEmergencyType::PositioningFailure {
+                    gps_lost_duration: Duration::from_secs(300), // Assume 5 minutes
+                }
+            }
+            LocalEmergencyType::TemperatureExtreme => {
+                BeaconEmergencyType::EnvironmentalHazard {
+                    hazard_type: "temperature_extreme".to_string(),
+                    severity: EmergencySeverity::High,
+                }
+            }
+            LocalEmergencyType::SystemOverload => {
+                BeaconEmergencyType::SystemFailure {
+                    component: HardwareComponent::PowerManagement, // Use available component
+                    severity: EmergencySeverity::Medium,
+                }
+            }
+        };
+
+        // Get current position for emergency beacon
+        let position = self.gps_manager.get_current_position()
+            .map(|pos| GeodeticPosition {
+                latitude: pos.latitude,
+                longitude: pos.longitude,
+                depth: pos.altitude,
+            });
+
+        // Activate emergency beacon system
+        let emergency_message = format!("Emergency: {:?}", emergency_type);
+        if let Err(e) = self.emergency_beacon_system.activate_emergency(
+            beacon_emergency_type,
+            position,
+            emergency_message,
+            &mut self.transceiver,
+        ) {
+            self.log_error(&format!("Failed to activate emergency beacon: {}", e));
+        }
+        
         match emergency_type {
-            EmergencyType::BatteryDepleted => {
+            LocalEmergencyType::BatteryDepleted => {
                 self.power_manager.set_power_mode(PowerOperationMode::Emergency)?;
                 self.operational_state = OperationalState::Emergency;
                 
@@ -519,23 +792,23 @@ where
                     self.prepare_emergency_shutdown()?;
                 }
             }
-            EmergencyType::HardwareFault => {
+            LocalEmergencyType::HardwareFault => {
                 self.operational_state = OperationalState::Error("Hardware fault".to_string());
                 self.send_emergency_messages()?;
             }
-            EmergencyType::CommunicationLost => {
+            LocalEmergencyType::CommunicationLost => {
                 // Continue autonomous operation
                 self.log_warning("Communication lost - continuing autonomous operation");
             }
-            EmergencyType::GpsSignalLost => {
+            LocalEmergencyType::GpsSignalLost => {
                 // Continue with last known position
                 self.log_warning("GPS signal lost - using last known position");
             }
-            EmergencyType::TemperatureExtreme => {
+            LocalEmergencyType::TemperatureExtreme => {
                 self.power_manager.set_power_mode(PowerOperationMode::PowerSave)?;
                 self.log_warning("Temperature extreme - entering power save mode");
             }
-            EmergencyType::SystemOverload => {
+            LocalEmergencyType::SystemOverload => {
                 self.power_manager.set_power_mode(PowerOperationMode::PowerSave)?;
                 self.operational_state = OperationalState::PowerSave;
             }
@@ -642,6 +915,11 @@ where
                 }
                 last_reliability_check = now;
             }
+
+            // Advanced reliability and fault tolerance monitoring
+            if let Err(e) = self.process_advanced_reliability_monitoring() {
+                self.log_error(&format!("Advanced reliability monitoring failed: {}", e));
+            }
             
             // Process control messages
             if let Some(receiver) = &self.control_receiver {
@@ -655,6 +933,363 @@ where
         }
         
         Ok(())
+    }
+
+    /// Process advanced reliability and fault tolerance monitoring
+    fn process_advanced_reliability_monitoring(&mut self) -> Result<(), BeaconError> {
+        // Process watchdog events
+        let watchdog_events = self.watchdog_timer.process_events();
+        for event in watchdog_events {
+            self.handle_watchdog_event(event)?;
+        }
+
+        // Send watchdog heartbeats
+        self.send_watchdog_heartbeats()?;
+
+        // Check for automatic configuration backup
+        self.check_automatic_config_backup()?;
+
+        // Update system health score
+        self.update_system_health_score();
+
+        // Process predictive maintenance alerts
+        self.process_predictive_maintenance_alerts()?;
+
+        // Handle emergency beacon operations
+        self.process_emergency_beacon_operations()?;
+
+        Ok(())
+    }
+
+    /// Handle watchdog events
+    fn handle_watchdog_event(&mut self, event: WatchdogEvent) -> Result<(), BeaconError> {
+        match event {
+            WatchdogEvent::Timeout { component, timeout_ms } => {
+                self.log_error(&format!("Watchdog timeout for component {}: {} ms", component, timeout_ms));
+                
+                // Record failure event for reliability monitoring
+                let failure_event = FailureEvent {
+                    timestamp: SystemTime::now(),
+                    component: component.clone(),
+                    failure_type: "watchdog_timeout".to_string(),
+                    severity: ErrorSeverity::Critical,
+                    duration: Some(Duration::from_millis(timeout_ms)),
+                    recovery_successful: false,
+                    recovery_time: None,
+                    impact_description: format!("Component {} became unresponsive", component),
+                    root_cause: Some("component_hang".to_string()),
+                };
+                self.reliability_monitor.record_failure(failure_event);
+            }
+            WatchdogEvent::RecoverySuccess { component, attempts } => {
+                self.log_info(&format!("Watchdog recovery successful for {}: {} attempts", component, attempts));
+            }
+            WatchdogEvent::RecoveryFailure { component, attempts } => {
+                self.log_error(&format!("Watchdog recovery failed for {}: {} attempts", component, attempts));
+                
+                // Trigger emergency mode if critical component fails recovery
+                if component == "gps" || component == "power" {
+                    self.handle_emergency(LocalEmergencyType::HardwareFault)?;
+                }
+            }
+            WatchdogEvent::EmergencyShutdown { reason } => {
+                self.log_error(&format!("Watchdog triggered emergency shutdown: {}", reason));
+                
+                // Activate emergency beacon
+                let emergency_type = BeaconEmergencyType::SystemFailure {
+                    component: HardwareComponent::PowerManagement, // Use available component
+                    severity: EmergencySeverity::Critical,
+                };
+                
+                let position = self.gps_manager.get_current_position()
+                    .map(|pos| GeodeticPosition {
+                        latitude: pos.latitude,
+                        longitude: pos.longitude,
+                        depth: pos.altitude,
+                    });
+
+                if let Err(e) = self.emergency_beacon_system.activate_emergency(
+                    emergency_type,
+                    position,
+                    reason,
+                    &mut self.transceiver,
+                ) {
+                    self.log_error(&format!("Failed to activate emergency beacon: {}", e));
+                }
+
+                // Prepare for emergency shutdown
+                self.prepare_emergency_shutdown()?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Send watchdog heartbeats for all components
+    fn send_watchdog_heartbeats(&mut self) -> Result<(), BeaconError> {
+        // Send heartbeats based on component activity
+        if self.gps_manager.get_status() != GpsStatus::HardwareFault {
+            let _ = self.watchdog_timer.heartbeat("gps");
+        }
+
+        if self.power_manager.get_battery_status().is_ok() {
+            let _ = self.watchdog_timer.heartbeat("power");
+        }
+
+        if self.communication_manager.is_connected() {
+            let _ = self.watchdog_timer.heartbeat("communication");
+        }
+
+        // Always send transceiver heartbeat if we can set power
+        if self.transceiver.set_transmission_power(self.current_power_level).is_ok() {
+            let _ = self.watchdog_timer.heartbeat("transceiver");
+        }
+
+        Ok(())
+    }
+
+    /// Check for automatic configuration backup
+    fn check_automatic_config_backup(&mut self) -> Result<(), BeaconError> {
+        if let Some(backup_id) = self.config_backup_manager.check_auto_backup(&self.config)
+            .map_err(|e| BeaconError::SystemError {
+                error_type: SystemErrorType::ResourceExhausted,
+                system_state: BeaconSystemState {
+                    operational_state: "Normal".to_string(),
+                    uptime_ms: 0,
+                    last_gps_fix: None,
+                    last_transmission: None,
+                    last_communication: None,
+                    active_threads: 1,
+                    error_count: 0,
+                },
+                resource_usage: ResourceUsageSnapshot {
+                    memory_usage_bytes: 0,
+                    memory_total_bytes: 1024 * 1024, // 1MB
+                    cpu_usage_percent: 0.0,
+                    flash_usage_bytes: 0,
+                    flash_total_bytes: 4 * 1024 * 1024, // 4MB
+                    active_connections: 0,
+                },
+            })? {
+            
+            self.log_info(&format!("Automatic configuration backup created: {}", backup_id));
+            self.last_config_backup = Some(SystemTime::now());
+        }
+
+        Ok(())
+    }
+
+    /// Create configuration backup
+    fn create_configuration_backup(&mut self, backup_type: BackupType, description: String) -> Result<String, BeaconError> {
+        self.config_backup_manager.create_backup(&self.config, backup_type, description)
+            .map_err(|e| BeaconError::SystemError {
+                error_type: SystemErrorType::ResourceExhausted,
+                system_state: BeaconSystemState {
+                    operational_state: "Normal".to_string(),
+                    uptime_ms: 0,
+                    last_gps_fix: None,
+                    last_transmission: None,
+                    last_communication: None,
+                    active_threads: 1,
+                    error_count: 0,
+                },
+                resource_usage: ResourceUsageSnapshot {
+                    memory_usage_bytes: 0,
+                    memory_total_bytes: 1024 * 1024, // 1MB
+                    cpu_usage_percent: 0.0,
+                    flash_usage_bytes: 0,
+                    flash_total_bytes: 4 * 1024 * 1024, // 4MB
+                    active_connections: 0,
+                },
+            })
+    }
+
+    /// Update system health score
+    fn update_system_health_score(&mut self) {
+        let mut health_factors: Vec<f64> = Vec::new();
+
+        // GPS health factor
+        let gps_health = match self.gps_manager.get_status() {
+            GpsStatus::Locked => 1.0,
+            GpsStatus::Acquiring => 0.7,
+            GpsStatus::SignalLost => 0.3,
+            GpsStatus::HardwareFault => 0.0,
+            _ => 0.5,
+        };
+        health_factors.push(gps_health);
+
+        // Power health factor
+        let power_health = if let Ok(battery_status) = self.power_manager.get_battery_status() {
+            (battery_status.capacity_percent as f64 / 100.0).max(0.0).min(1.0)
+        } else {
+            0.0
+        };
+        health_factors.push(power_health);
+
+        // Communication health factor
+        let comm_health = if self.communication_manager.is_connected() {
+            if let Some(signal_strength) = self.communication_manager.get_signal_strength() {
+                (signal_strength as f64 / 100.0).max(0.0).min(1.0)
+            } else {
+                0.5
+            }
+        } else {
+            0.0
+        };
+        health_factors.push(comm_health);
+
+        // Reliability health factor
+        if let Ok(reliability_metrics) = self.reliability_monitor.calculate_reliability_metrics() {
+            health_factors.push(reliability_metrics.overall_availability);
+        }
+
+        // Calculate weighted average
+        self.system_health_score = if health_factors.is_empty() {
+            0.0
+        } else {
+            health_factors.iter().sum::<f64>() / health_factors.len() as f64
+        };
+    }
+
+    /// Calculate system health score
+    fn calculate_system_health_score(&self) -> f64 {
+        // Initial health score calculation
+        1.0
+    }
+
+    /// Process predictive maintenance alerts
+    fn process_predictive_maintenance_alerts(&mut self) -> Result<(), BeaconError> {
+        // Clear old alerts
+        let now = SystemTime::now();
+        self.predictive_maintenance_alerts.retain(|alert| {
+            now.duration_since(alert.created_at).unwrap_or(Duration::from_secs(0)).as_secs() < 86400 // Keep for 24 hours
+        });
+
+        // Generate new alerts based on system health
+        if self.system_health_score < 0.7 {
+            let alert = MaintenanceAlert {
+                alert_id: format!("HEALTH_{}", now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs()),
+                component: "system".to_string(),
+                alert_type: MaintenanceAlertType::PerformanceDegradation,
+                severity: if self.system_health_score < 0.5 { MaintenanceSeverity::High } else { MaintenanceSeverity::Medium },
+                predicted_failure_time: Some(now + Duration::from_secs(86400)), // 24 hours
+                confidence: 0.8,
+                description: format!("System health score degraded to {:.1}%", self.system_health_score * 100.0),
+                recommended_actions: vec![
+                    "Run comprehensive diagnostics".to_string(),
+                    "Check component performance".to_string(),
+                    "Review error logs".to_string(),
+                ],
+                created_at: now,
+            };
+
+            // Only add if we don't already have a similar alert
+            if !self.predictive_maintenance_alerts.iter().any(|a| a.component == "system" && matches!(a.alert_type, MaintenanceAlertType::PerformanceDegradation)) {
+                self.predictive_maintenance_alerts.push(alert);
+                self.log_warning(&format!("Predictive maintenance alert: System health degraded to {:.1}%", self.system_health_score * 100.0));
+            }
+        }
+
+        // Check component-specific alerts
+        if let Ok(reliability_metrics) = self.reliability_monitor.calculate_reliability_metrics() {
+            for (component, reliability) in &reliability_metrics.component_reliability {
+                if reliability.availability < 0.9 {
+                    let alert = MaintenanceAlert {
+                        alert_id: format!("COMP_{}_{}", component, now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs()),
+                        component: component.clone(),
+                        alert_type: MaintenanceAlertType::ComponentWear,
+                        severity: if reliability.availability < 0.8 { MaintenanceSeverity::High } else { MaintenanceSeverity::Medium },
+                        predicted_failure_time: Some(now + Duration::from_secs(172800)), // 48 hours
+                        confidence: 0.7,
+                        description: format!("Component {} availability degraded to {:.1}%", component, reliability.availability * 100.0),
+                        recommended_actions: vec![
+                            format!("Inspect {} component", component),
+                            "Check for hardware faults".to_string(),
+                            "Consider component replacement".to_string(),
+                        ],
+                        created_at: now,
+                    };
+
+                    // Only add if we don't already have a similar alert for this component
+                    if !self.predictive_maintenance_alerts.iter().any(|a| a.component == *component && matches!(a.alert_type, MaintenanceAlertType::ComponentWear)) {
+                        self.predictive_maintenance_alerts.push(alert);
+                        self.log_warning(&format!("Predictive maintenance alert: Component {} availability degraded", component));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process emergency beacon operations
+    fn process_emergency_beacon_operations(&mut self) -> Result<(), BeaconError> {
+        let position = self.gps_manager.get_current_position()
+            .map(|pos| GeodeticPosition {
+                latitude: pos.latitude,
+                longitude: pos.longitude,
+                depth: pos.altitude,
+            });
+
+        // Send identification broadcast
+        if let Err(e) = self.emergency_beacon_system.send_identification_broadcast(position, &mut self.transceiver) {
+            self.log_warning(&format!("Emergency beacon identification broadcast failed: {}", e));
+        }
+
+        // Process emergency transmissions if in emergency mode
+        if let Err(e) = self.emergency_beacon_system.process_emergency_transmissions(position, &mut self.transceiver) {
+            self.log_error(&format!("Emergency beacon transmission processing failed: {}", e));
+        }
+
+        Ok(())
+    }
+
+    /// Get predictive maintenance alerts
+    pub fn get_predictive_maintenance_alerts(&self) -> &Vec<MaintenanceAlert> {
+        &self.predictive_maintenance_alerts
+    }
+
+    /// Get system health score
+    pub fn get_system_health_score(&self) -> f64 {
+        self.system_health_score
+    }
+
+    /// Get watchdog statistics
+    pub fn get_watchdog_statistics(&self) -> WatchdogStats {
+        self.watchdog_timer.get_statistics()
+    }
+
+    /// Get configuration backup statistics
+    pub fn get_backup_statistics(&self) -> &BackupStatistics {
+        self.config_backup_manager.get_statistics()
+    }
+
+    /// Restore configuration from backup
+    pub fn restore_configuration_from_backup(&mut self, backup_id: &str) -> Result<(), BeaconError> {
+        let restored_config = self.config_backup_manager.restore_backup(backup_id)
+            .map_err(|e| BeaconError::ConfigurationError {
+                error_type: ConfigurationErrorType::ValidationFailed,
+                parameter_name: "backup_restore".to_string(),
+                current_value: backup_id.to_string(),
+                expected_value: "valid_backup_id".to_string(),
+            })?;
+
+        self.update_configuration(restored_config)?;
+        self.log_info(&format!("Configuration restored from backup: {}", backup_id));
+
+        Ok(())
+    }
+
+    /// Get emergency restore configuration
+    pub fn get_emergency_restore_configuration(&mut self) -> Result<BeaconConfig, BeaconError> {
+        self.config_backup_manager.get_emergency_restore_config()
+            .map_err(|e| BeaconError::ConfigurationError {
+                error_type: ConfigurationErrorType::ValidationFailed,
+                parameter_name: "emergency_restore".to_string(),
+                current_value: "none".to_string(),
+                expected_value: "valid_backup".to_string(),
+            })
     }
     
     /// Update GPS status and handle state transitions
@@ -704,7 +1339,7 @@ where
                             self.apply_recovery_strategy(recovery_strategy)?;
                         }
                         
-                        self.handle_emergency(EmergencyType::GpsSignalLost)?;
+                        self.handle_emergency(LocalEmergencyType::GpsSignalLost)?;
                     }
                 }
             }
@@ -720,7 +1355,7 @@ where
                     self.apply_recovery_strategy(recovery_strategy)?;
                 }
                 
-                self.handle_emergency(EmergencyType::HardwareFault)?;
+                self.handle_emergency(LocalEmergencyType::HardwareFault)?;
             }
             _ => {}
         }
@@ -778,7 +1413,7 @@ where
                 self.apply_recovery_strategy(recovery_strategy)?;
             }
             
-            self.handle_emergency(EmergencyType::BatteryDepleted)?;
+            self.handle_emergency(LocalEmergencyType::BatteryDepleted)?;
         } else if battery_status.capacity_percent <= self.config.power.power_save_threshold_percent {
             if self.operational_state == OperationalState::Normal {
                 self.operational_state = OperationalState::PowerSave;
@@ -829,7 +1464,7 @@ where
                 self.apply_recovery_strategy(recovery_strategy)?;
             }
             
-            self.handle_emergency(EmergencyType::TemperatureExtreme)?;
+            self.handle_emergency(LocalEmergencyType::TemperatureExtreme)?;
         }
         
         // Check for power threshold violations
@@ -1157,7 +1792,7 @@ where
                     self.log_error(&format!("CRITICAL HEALTH ALERT: {} - {}", alert.component, alert.message));
                     // Consider emergency actions
                     if alert.component.contains("Error Rate") {
-                        let _ = self.handle_emergency(EmergencyType::SystemOverload);
+                        let _ = self.handle_emergency(LocalEmergencyType::SystemOverload);
                     }
                 }
                 ErrorSeverity::Warning => {
@@ -1457,7 +2092,7 @@ where
             }
             AdaptationAction::RequestEmergencyShutdown { reason } => {
                 self.log_error(&format!("Emergency shutdown requested: {}", reason));
-                self.handle_emergency(EmergencyType::TemperatureExtreme)?;
+                self.handle_emergency(LocalEmergencyType::TemperatureExtreme)?;
             }
             AdaptationAction::AdjustSensorSampling { sensor, from_ms, to_ms } => {
                 self.log_info(&format!("Adjusting {} sensor sampling from {}ms to {}ms", sensor, from_ms, to_ms));
@@ -1631,7 +2266,7 @@ where
                         }
                         RecommendedAction::EmergencyShutdown => {
                             self.log_error(&format!("Emergency shutdown recommended due to {:?} failure", result.component));
-                            self.handle_emergency(EmergencyType::HardwareFault)?;
+                            self.handle_emergency(LocalEmergencyType::HardwareFault)?;
                         }
                         _ => {}
                     }
@@ -2002,7 +2637,7 @@ mod tests {
         assert_eq!(controller.operational_state, OperationalState::Initializing);
         
         // Test emergency handling
-        assert!(controller.handle_emergency(EmergencyType::BatteryDepleted).is_ok());
+        assert!(controller.handle_emergency(LocalEmergencyType::BatteryDepleted).is_ok());
         assert_eq!(controller.operational_state, OperationalState::Emergency);
     }
 }

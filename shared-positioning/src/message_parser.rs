@@ -25,7 +25,7 @@ pub struct AnchorMessage {
 }
 
 /// Geodetic position with validation
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub struct GeodeticPosition {
     pub latitude: f64,
     pub longitude: f64,
@@ -628,6 +628,23 @@ impl MessageBuilder {
         Self {
             checksum_calculator: MessageParser::new(),
         }
+    }
+
+    /// Calculate checksum for message data
+    pub fn calculate_checksum(&self, data: &[u8]) -> u16 {
+        // Simple CRC16-like checksum
+        let mut checksum: u16 = 0xFFFF;
+        for byte in data {
+            checksum ^= *byte as u16;
+            for _ in 0..8 {
+                if checksum & 0x0001 != 0 {
+                    checksum = (checksum >> 1) ^ 0xA001;
+                } else {
+                    checksum >>= 1;
+                }
+            }
+        }
+        checksum
     }
 
     /// Build V1 message format for transmission

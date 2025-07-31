@@ -15,6 +15,9 @@ pub mod environmental_monitor;
 pub mod hardware_monitor;
 pub mod reliability_monitor;
 pub mod virtual_communication;
+pub mod watchdog_timer;
+pub mod config_backup;
+pub mod emergency_beacon;
 
 // Re-export commonly used types for convenience
 pub use message_parser::{
@@ -98,4 +101,17 @@ pub use reliability_monitor::{
 };
 pub use virtual_communication::{
     VirtualMessage, IpcMessage
+};
+pub use watchdog_timer::{
+    WatchdogTimer, WatchdogConfig, WatchdogEvent, WatchdogStats, ComponentWatchdogHealth, WatchdogError
+};
+pub use config_backup::{
+    ConfigBackupManager, ConfigBackupError, BackupMetadata, BackupType, ConfigBackup,
+    ValidationResults, BackupManagerConfig, BackupStatistics
+};
+pub use emergency_beacon::{
+    EmergencyBeaconSystem, EmergencyBeaconError, EmergencyType, EmergencySeverity,
+    EmergencyBeaconId, EmergencyContact, BeaconCapabilities, BeaconCertification,
+    DistressSignal, EmergencyPriority, AssistanceType, EmergencyBeaconConfig,
+    EmergencyTransmissionStats
 };

@@ -198,6 +198,7 @@ pub enum SystemErrorType {
 pub enum HardwareComponent {
     GpsReceiver,
     Transceiver,
+    UnderwaterTransceiver,
     PowerManagement,
     CommunicationModule,
     TemperatureSensor,
@@ -214,6 +215,9 @@ pub enum HardwareFaultType {
     SensorMalfunction,
     PowerSupplyFault,
     OverheatingDetected,
+    SignalProcessingFailure,
+    SensorFailure,
+    ConnectionFailure,
 }
 
 /// Power modes

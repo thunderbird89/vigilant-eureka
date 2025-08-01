@@ -2,7 +2,7 @@ name: Dependency Updates
 
 on:
   push
-
+    
 env:
   CARGO_TERM_COLOR: always
 
@@ -103,7 +103,7 @@ jobs:
         draft: false
 
     - name: Upload update report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: dependency-update-report
         path: update-report.md
@@ -183,7 +183,7 @@ jobs:
           });
 
     - name: Upload advisory report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: security-advisory-report
         path: advisory-report.md

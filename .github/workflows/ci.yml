@@ -133,7 +133,7 @@ jobs:
         cargo bench --all -- --output-format json | tee benchmark_results.json || true
 
     - name: Store benchmark results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
         path: benchmark_results.json
@@ -178,7 +178,7 @@ jobs:
         cargo clippy --all-targets --all-features --message-format=json -- -D warnings > clippy-report.json || true
 
     - name: Upload quality reports
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: quality-reports
         path: |
@@ -253,7 +253,7 @@ jobs:
         echo "Generated on: $(date)" >> release-summary.md
 
     - name: Upload release summary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: release-summary
         path: release-summary.md

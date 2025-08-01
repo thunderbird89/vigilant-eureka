@@ -2,11 +2,12 @@ use std::time::{Duration, SystemTime};
 use std::thread;
 use uuid::Uuid;
 
-use beacon::{BeaconController, BeaconConfig, MessageVersion, EmergencyConfig};
+use beacon::BeaconController;
+use shared_positioning::{BeaconConfig, beacon_config::MessageVersion, EmergencyConfig};
 use shared_positioning::{
     GpsConfig, PowerConfig, CommunicationConfig, GpsPosition, BatteryStatus, BatteryHealth,
     ChargingStatus, PowerOperationMode, MockGpsManager, MockPowerManager, 
-    MockCommunicationManager, MockTransceiverInterface, GpsManager, PowerManager,
+    MockCommunicationManager, MockTransceiver as MockTransceiverInterface, GpsManager, PowerManager,
     CommunicationManager, TransceiverInterface, GpsStatus, CommError, PowerError,
     TransmissionError, GeodeticPosition, MessageBuilder
 };
@@ -14,13 +15,7 @@ use shared_positioning::{
 /// Integration test for GPS system functionality
 #[tokio::test]
 async fn test_gps_integration() {
-    let config = GpsConfig {
-        acquisition_timeout_s: 30,
-        update_interval_s: 2,
-        min_satellite_count: 4,
-        accuracy_threshold_m: 5.0,
-        cold_start_timeout_s: 60,
-    };
+    let config = GpsConfig::default();
     
     let mut gps_manager = MockGpsManager::with_test_positions(config.clone()).unwrap();
     
@@ -167,6 +162,8 @@ async fn test_communication_integration() {
         max_retry_interval_hours: 6,
         connection_timeout_s: 30,
         data_compression_enabled: true,
+        server_endpoint: "https://api.example.com".to_string(),
+        auth_token: "test_token".to_string(),
     };
     
     let mut comm_manager = MockCommunicationManager::new();
@@ -188,42 +185,23 @@ async fn test_communication_integration() {
                 altitude: 10.0,
                 timestamp: SystemTime::now(),
                 accuracy_m: 3.0,
+                hdop: 1.2,
+                quality_score: 85.0,
                 satellite_count: 8,
+                satellites: vec![],
+                velocity: None,
+                vdop: Some(1.5),
             }
         ],
         battery_status: BatteryStatus::new(3.7, 100.0, 75.0, 25.0),
         system_health: shared_positioning::SystemHealth {
-            overall_health_score: 0.85,
-            gps_health: shared_positioning::GpsStatusSnapshot {
-                status: GpsStatus::Locked,
-                satellite_count: 8,
-                signal_strength: Some(85),
-                last_fix_time: Some(SystemTime::now()),
-                position_accuracy_m: Some(3.0),
-            },
-            power_health: shared_positioning::BatteryStatusSnapshot {
-                voltage_v: 3.7,
-                current_ma: 100.0,
-                capacity_percent: 75.0,
-                temperature_c: 25.0,
-                health: shared_positioning::BeaconBatteryHealth::Good,
-                cycles: 50,
-            },
-            communication_health: shared_positioning::CommunicationStatusSnapshot {
-                is_connected: true,
-                signal_strength: Some(80),
-                last_successful_contact: Some(SystemTime::now()),
-                connection_uptime: Duration::from_secs(3600),
-                data_transmitted_bytes: 1024,
-                data_received_bytes: 512,
-            },
-            transmission_health: shared_positioning::TransmissionStatusSnapshot {
-                messages_sent: 100,
-                transmission_failures: 2,
-                last_transmission_time: Some(SystemTime::now()),
-                average_transmission_interval_ms: 5000,
-                signal_quality_average: 85,
-            },
+            cpu_usage_percent: 45.0,
+            memory_usage_percent: 60.0,
+            temperature_c: 25.0,
+            gps_signal_quality: 85,
+            comm_signal_quality: 80,
+            restart_count: 0,
+            last_restart_reason: "Normal startup".to_string(),
         },
         transmission_stats: shared_positioning::CommTransmissionStats {
             messages_sent: 100,
@@ -231,7 +209,10 @@ async fn test_communication_integration() {
             last_transmission_time: Some(SystemTime::now()),
             average_transmission_interval_ms: 5000,
             signal_quality_history: vec![85, 87, 83, 89, 86],
+            power_level_history: vec![128, 130, 125, 135, 128],
         },
+        uptime: Duration::from_secs(3600),
+        recent_errors: vec![],
     };
     
     assert!(comm_manager.send_status_report(status_report).is_ok());
@@ -262,22 +243,33 @@ async fn test_communication_integration() {
 async fn test_end_to_end_beacon_operation() {
     let beacon_config = BeaconConfig {
         beacon_id: Uuid::new_v4(),
-        transmission_interval_ms: 2000, // Faster for testing
-        message_version: MessageVersion::V3,
-        gps_config: GpsConfig {
+        transmission: shared_positioning::beacon_config::TransmissionConfig {
+            interval_ms: 2000, // Faster for testing
+            message_version: shared_positioning::beacon_config::MessageVersion::V3,
+            power_level: 128,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            adaptive_power: true,
+            sequence_rollover: 65535,
+        },
+        gps: shared_positioning::beacon_config::GpsConfig {
             acquisition_timeout_s: 10,
             update_interval_s: 1,
             min_satellite_count: 4,
             accuracy_threshold_m: 5.0,
             cold_start_timeout_s: 20,
+            enable_dgps: false,
+            max_fix_age_s: 30,
         },
-        power_config: PowerConfig::default(),
-        communication_config: CommunicationConfig::default(),
-        emergency_config: EmergencyConfig::default(),
+        power: shared_positioning::beacon_config::PowerConfig::default(),
+        communication: shared_positioning::beacon_config::CommunicationConfig::default(),
+        emergency: shared_positioning::beacon_config::EmergencyConfig::default(),
+        hardware: shared_positioning::beacon_config::HardwareConfig::default(),
+        metadata: shared_positioning::beacon_config::BeaconConfigMetadata::default(),
     };
     
     // Create mock hardware interfaces
-    let mut gps_manager = MockGpsManager::with_test_positions(beacon_config.gps_config.clone()).unwrap();
+    let mut gps_manager = MockGpsManager::with_test_positions(shared_positioning::GpsConfig::default()).unwrap();
     gps_manager.set_acquisition_delay(Duration::from_millis(100));
     
     let mut power_manager = MockPowerManager::new();
@@ -323,7 +315,10 @@ async fn test_end_to_end_beacon_operation() {
     
     // Test emergency scenario
     beacon.power_manager.simulate_discharge(92.0); // Trigger emergency
-    assert!(beacon.handle_emergency(beacon::EmergencyType::BatteryDepleted).is_ok());
+    assert!(beacon.handle_emergency(shared_positioning::EmergencyType::PowerCritical { 
+        battery_percent: 8.0, 
+        estimated_time_remaining: Duration::from_secs(300) 
+    }).is_ok());
     
     let status = beacon.get_status();
     assert_eq!(status.operational_state, beacon::OperationalState::Emergency);
@@ -338,13 +333,14 @@ async fn test_end_to_end_beacon_operation() {
 /// Test message transmission and reception integration
 #[tokio::test]
 async fn test_message_transmission_integration() {
-    let beacon_id = Uuid::new_v4();
+    let beacon_uuid = Uuid::new_v4();
+    let beacon_id = (beacon_uuid.as_u128() & 0xFFFF) as u16; // Convert UUID to u16
     let message_builder = MessageBuilder::new();
     
     let position = GeodeticPosition {
         latitude: 37.7749,
         longitude: -122.4194,
-        altitude: 10.0,
+        depth: 10.0,
     };
     
     // Test V1 message transmission
@@ -370,7 +366,7 @@ async fn test_message_transmission_integration() {
     
     // Test V3 message transmission (with UUID)
     let v3_message = message_builder.build_v3_message(
-        beacon_id,
+        beacon_uuid,
         position,
         89,
         125
@@ -417,15 +413,33 @@ async fn test_environmental_adaptation_integration() {
     // Test extreme temperature adaptation
     beacon.environmental_monitor.update_conditions(
         shared_positioning::ExtendedEnvironmentalConditions {
-            temperature_c: -25.0, // Extreme cold
-            humidity_percent: 95.0,
-            pressure_hpa: 980.0, // Low pressure
-            wind_speed_ms: 30.0, // High wind
-            wave_height_m: 6.0, // High waves
-            visibility_m: 50.0, // Poor visibility
-            precipitation_mmh: 15.0, // Heavy precipitation
-            uv_index: 2.0,
-            air_quality_index: 200.0, // Poor air quality
+            base_conditions: shared_positioning::EnvironmentalConditions::default(),
+            air_temperature_c: Some(-25.0), // Extreme cold
+            humidity_percent: Some(95.0),
+            atmospheric_pressure_hpa: Some(980.0), // Low pressure
+            wind_speed_ms: Some(30.0), // High wind
+            wave_height_m: Some(6.0), // High waves
+            solar_irradiance_wm2: Some(200.0),
+            internal_temperature_c: Some(-20.0),
+            cpu_temperature_c: Some(-15.0),
+            battery_temperature_c: Some(-18.0),
+            enclosure_humidity_percent: Some(90.0),
+            vibration_level_g: Some(2.5),
+            magnetic_field_strength_ut: Some(45.0),
+            wave_period_s: Some(8.0),
+            sea_state: Some(shared_positioning::environmental_monitor::SeaState::VeryRough),
+            tilt_angle_degrees: Some(15.0),
+            acceleration_g: Some(1.2),
+            thermal_gradient_c_per_m: Some(-5.0),
+            heat_dissipation_rate_w: Some(2.5),
+            cooling_efficiency_percent: Some(60.0),
+            timestamp: SystemTime::now(),
+            measurement_quality: shared_positioning::environmental_monitor::MeasurementQuality {
+                overall_quality: 0.9,
+                sensor_health: std::collections::HashMap::new(),
+                calibration_status: std::collections::HashMap::new(),
+                last_calibration: std::collections::HashMap::new(),
+            },
         }
     );
     
@@ -434,15 +448,33 @@ async fn test_environmental_adaptation_integration() {
     // Test high temperature adaptation
     beacon.environmental_monitor.update_conditions(
         shared_positioning::ExtendedEnvironmentalConditions {
-            temperature_c: 65.0, // Extreme heat
-            humidity_percent: 85.0,
-            pressure_hpa: 1030.0, // High pressure
-            wind_speed_ms: 5.0,
-            wave_height_m: 1.0,
-            visibility_m: 10000.0,
-            precipitation_mmh: 0.0,
-            uv_index: 11.0, // Extreme UV
-            air_quality_index: 50.0,
+            base_conditions: shared_positioning::EnvironmentalConditions::default(),
+            air_temperature_c: Some(65.0), // Extreme heat
+            humidity_percent: Some(85.0),
+            atmospheric_pressure_hpa: Some(1030.0), // High pressure
+            wind_speed_ms: Some(5.0),
+            wave_height_m: Some(1.0),
+            solar_irradiance_wm2: Some(1200.0), // High solar irradiance
+            internal_temperature_c: Some(70.0),
+            cpu_temperature_c: Some(75.0),
+            battery_temperature_c: Some(68.0),
+            enclosure_humidity_percent: Some(80.0),
+            vibration_level_g: Some(0.5),
+            magnetic_field_strength_ut: Some(50.0),
+            wave_period_s: Some(4.0),
+            sea_state: Some(shared_positioning::environmental_monitor::SeaState::Slight),
+            tilt_angle_degrees: Some(5.0),
+            acceleration_g: Some(1.0),
+            thermal_gradient_c_per_m: Some(10.0),
+            heat_dissipation_rate_w: Some(8.5),
+            cooling_efficiency_percent: Some(40.0),
+            timestamp: SystemTime::now(),
+            measurement_quality: shared_positioning::environmental_monitor::MeasurementQuality {
+                overall_quality: 0.9,
+                sensor_health: std::collections::HashMap::new(),
+                calibration_status: std::collections::HashMap::new(),
+                last_calibration: std::collections::HashMap::new(),
+            },
         }
     );
     

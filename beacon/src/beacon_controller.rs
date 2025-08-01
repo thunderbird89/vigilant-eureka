@@ -425,7 +425,7 @@ where
     }
 
     /// Validate beacon configuration
-    fn validate_config(config: &BeaconConfig) -> Result<(), BeaconError> {
+    pub fn validate_config(config: &BeaconConfig) -> Result<(), BeaconError> {
         if config.transmission.interval_ms < 1000 || config.transmission.interval_ms > 60000 {
             return Err(BeaconError::ConfigurationError {
                 error_type: ConfigurationErrorType::ParameterOutOfRange,

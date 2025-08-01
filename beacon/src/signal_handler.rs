@@ -154,14 +154,23 @@ mod tests {
         let config_manager = ConfigManager::new(config_path);
         
         // Create initial configuration
-        let initial_config = crate::beacon_controller::BeaconConfig {
+        let initial_config = shared_positioning::BeaconConfig {
             beacon_id: Uuid::new_v4(),
-            transmission_interval_ms: 5000,
-            message_version: crate::beacon_controller::MessageVersion::V3,
-            gps_config: shared_positioning::GpsConfig::default(),
-            power_config: shared_positioning::PowerConfig::default(),
-            communication_config: shared_positioning::CommunicationConfig::default(),
-            emergency_config: crate::beacon_controller::EmergencyConfig::default(),
+            transmission: shared_positioning::beacon_config::TransmissionConfig {
+                interval_ms: 5000,
+                message_version: shared_positioning::beacon_config::MessageVersion::V3,
+                power_level: 128,
+                max_retries: 3,
+                retry_delay_ms: 1000,
+                adaptive_power: true,
+                sequence_rollover: 65535,
+            },
+            gps: shared_positioning::beacon_config::GpsConfig::default(),
+            power: shared_positioning::beacon_config::PowerConfig::default(),
+            communication: shared_positioning::beacon_config::CommunicationConfig::default(),
+            emergency: shared_positioning::beacon_config::EmergencyConfig::default(),
+            hardware: shared_positioning::beacon_config::HardwareConfig::default(),
+            metadata: shared_positioning::beacon_config::BeaconConfigMetadata::default(),
         };
         
         // Save initial configuration
@@ -169,7 +178,7 @@ mod tests {
         
         // Create beacon controller
         let gps_manager = shared_positioning::MockGpsManager::with_test_positions(
-            initial_config.gps_config.clone()
+            shared_positioning::GpsConfig::default()
         ).unwrap();
         let power_manager = shared_positioning::MockPowerManager::new();
         let communication_manager = shared_positioning::MockCommunicationManager::new();

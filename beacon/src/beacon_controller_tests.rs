@@ -3,6 +3,18 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::collections::VecDeque;
+    use std::time::{Duration, SystemTime};
+    use std::thread;
+    use shared_positioning::{
+        GpsManager, EmergencyType, BeaconError, GpsErrorType, PowerErrorType,
+        BatteryStatusSnapshot, BeaconBatteryHealth, BeaconPowerMode, BeaconChargingStatus,
+        SystemErrorType, BeaconSystemState, ResourceUsageSnapshot, GeodeticPosition,
+        MessageBuilder, ExtendedEnvironmentalConditions, GpsConfig, BeaconConfig,
+        MockTransceiver as MockTransceiverInterface, PowerConfig, CommunicationConfig,
+        EmergencyConfig, beacon_config::MessageVersion
+    };
+    use uuid::Uuid;
+    use crate::{BeaconController, OperationalState};
     use shared_positioning::{
         MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiverInterface,
         GpsPosition, BatteryStatus, BatteryHealth, ChargingStatus, PowerOperationMode,
@@ -15,12 +27,21 @@ mod tests {
     fn create_test_config() -> BeaconConfig {
         BeaconConfig {
             beacon_id: Uuid::new_v4(),
-            transmission_interval_ms: 5000,
-            message_version: MessageVersion::V3,
-            gps_config: GpsConfig::default(),
-            power_config: PowerConfig::default(),
-            communication_config: CommunicationConfig::default(),
-            emergency_config: EmergencyConfig::default(),
+            transmission: shared_positioning::beacon_config::TransmissionConfig {
+                interval_ms: 5000,
+                message_version: MessageVersion::V3,
+                power_level: 128,
+                max_retries: 3,
+                retry_delay_ms: 1000,
+                adaptive_power: true,
+                sequence_rollover: 65535,
+            },
+            gps: shared_positioning::beacon_config::GpsConfig::default(),
+            power: PowerConfig::default(),
+            communication: CommunicationConfig::default(),
+            emergency: EmergencyConfig::default(),
+            hardware: shared_positioning::beacon_config::HardwareConfig::default(),
+            metadata: shared_positioning::beacon_config::BeaconConfigMetadata::default(),
         }
     }
 
@@ -127,21 +148,35 @@ mod tests {
         let mut controller = BeaconController::new(config, gps, power, comm, transceiver).unwrap();
         
         // Test battery depletion emergency
-        assert!(controller.handle_emergency(EmergencyType::BatteryDepleted).is_ok());
+        assert!(controller.handle_emergency(EmergencyType::PowerCritical { 
+            battery_percent: 5.0, 
+            estimated_time_remaining: Duration::from_secs(300) 
+        }).is_ok());
         assert_eq!(controller.operational_state, OperationalState::Emergency);
         
         // Test hardware fault emergency
-        assert!(controller.handle_emergency(EmergencyType::HardwareFault).is_ok());
+        assert!(controller.handle_emergency(EmergencyType::HardwareFault { 
+            component: shared_positioning::HardwareComponent::Gps, 
+            fault_description: "GPS signal lost".to_string() 
+        }).is_ok());
         assert!(matches!(controller.operational_state, OperationalState::Error(_)));
         
         // Test GPS signal lost emergency
-        assert!(controller.handle_emergency(EmergencyType::GpsSignalLost).is_ok());
+        assert!(controller.handle_emergency(EmergencyType::PositioningFailure { 
+            gps_lost_duration: Duration::from_secs(300) 
+        }).is_ok());
         
         // Test temperature extreme emergency
-        assert!(controller.handle_emergency(EmergencyType::TemperatureExtreme).is_ok());
+        assert!(controller.handle_emergency(EmergencyType::EnvironmentalHazard { 
+            hazard_type: "Temperature extreme".to_string(), 
+            severity: shared_positioning::EmergencySeverity::High 
+        }).is_ok());
         
         // Test system overload emergency
-        assert!(controller.handle_emergency(EmergencyType::SystemOverload).is_ok());
+        assert!(controller.handle_emergency(EmergencyType::SystemFailure { 
+            component: shared_positioning::HardwareComponent::Cpu, 
+            severity: shared_positioning::EmergencySeverity::High 
+        }).is_ok());
         assert_eq!(controller.operational_state, OperationalState::PowerSave);
     }
 
@@ -278,15 +313,28 @@ mod tests {
         
         // Test with extreme conditions
         controller.environmental_monitor.update_conditions(ExtendedEnvironmentalConditions {
-            temperature_c: 70.0, // Extreme temperature
-            humidity_percent: 95.0,
-            pressure_hpa: 1013.25,
-            wind_speed_ms: 25.0, // High wind
-            wave_height_m: 5.0, // High waves
-            visibility_m: 100.0, // Poor visibility
-            precipitation_mmh: 10.0, // Heavy rain
-            uv_index: 8.0,
-            air_quality_index: 150.0, // Poor air quality
+            base_conditions: shared_positioning::EnvironmentalConditions::default(),
+            air_temperature_c: Some(70.0), // Extreme temperature
+            humidity_percent: Some(95.0),
+            atmospheric_pressure_hpa: Some(1013.25),
+            wind_speed_ms: Some(25.0), // High wind
+            wave_height_m: Some(5.0), // High waves
+            solar_irradiance_wm2: Some(800.0),
+            internal_temperature_c: Some(75.0),
+            cpu_temperature_c: Some(80.0),
+            battery_temperature_c: Some(70.0),
+            enclosure_humidity_percent: Some(90.0),
+            vibration_level_g: Some(2.0),
+            magnetic_field_strength_ut: Some(50.0),
+            wave_period_s: Some(6.0),
+            sea_state: Some(shared_positioning::environmental_monitor::SeaState::Rough),
+            tilt_angle_degrees: Some(10.0),
+            acceleration_g: Some(1.1),
+            thermal_gradient_c_per_m: Some(5.0),
+            heat_dissipation_rate_w: Some(15.0),
+            cooling_efficiency_percent: Some(70.0),
+            timestamp: SystemTime::now(),
+            measurement_quality: shared_positioning::environmental_monitor::MeasurementQuality::Good,
         });
         
         assert!(controller.update_environmental_monitoring().is_ok());
@@ -381,7 +429,7 @@ mod tests {
             let geodetic_pos = GeodeticPosition {
                 latitude: position.latitude,
                 longitude: position.longitude,
-                altitude: position.altitude,
+                depth: 10.0,
             };
             
             // Test V1 message building
@@ -461,19 +509,24 @@ mod tests {
         for i in 0..1000 {
             let error = BeaconError::SystemError {
                 error_type: SystemErrorType::ResourceExhausted,
-                system_state: BeaconSystemState::Normal,
+                system_state: BeaconSystemState {
+                    operational_state: "Normal".to_string(),
+                    uptime_ms: 3600000,
+                    last_gps_fix: Some(SystemTime::now()),
+                    last_transmission: Some(SystemTime::now()),
+                    last_communication: Some(SystemTime::now()),
+                    active_threads: 4,
+                    error_count: 0,
+                },
                 resource_usage: ResourceUsageSnapshot {
                     memory_usage_bytes: 1024 * i,
+                    memory_total_bytes: 1024 * 1024,
                     cpu_usage_percent: 50.0,
-                    storage_usage_bytes: 2048 * i,
-                    network_usage_bytes: 512 * i,
+                    flash_usage_bytes: 2048 * i,
+                    flash_total_bytes: 1024 * 1024 * 16,
+                    active_connections: 2,
                 },
-                available_resources: ResourceUsageSnapshot {
-                    memory_usage_bytes: 1024 * 1024,
-                    cpu_usage_percent: 100.0,
-                    storage_usage_bytes: 1024 * 1024 * 10,
-                    network_usage_bytes: 1024 * 1024,
-                },
+
             };
             
             controller.log_beacon_error(error);

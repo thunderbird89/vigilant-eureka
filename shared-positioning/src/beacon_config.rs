@@ -2365,3 +2365,17 @@ mod tests {
         assert!(!manager.get_change_history().is_empty());
     }
 }
+
+impl Default for BeaconConfigMetadata {
+    fn default() -> Self {
+        Self {
+            schema_version: "1.0.0".to_string(),
+            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            modified_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            description: "Default beacon configuration".to_string(),
+            author: "system".to_string(),
+            checksum: "".to_string(),
+            migration_history: Vec::new(),
+        }
+    }
+}

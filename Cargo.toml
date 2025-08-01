@@ -1,9 +1,9 @@
-[package]
-name = "trilateration"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "receiver",
+    "beacon",
+    "shared-positioning",
+    "beacon-emulator",
+]
 
-[dependencies]
-nalgebra = "0.33"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0" 
+edition = "2021"

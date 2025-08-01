@@ -1,0 +1,39 @@
+[package]
+name = "beacon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nalgebra = "0.33"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+shared-positioning = { path = "../shared-positioning" }
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full", "signal"] }
+tokio-stream = "0.1"
+toml = "0.8"
+serde_yaml = "0.9"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rand = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+
+[dev-dependencies]
+tempfile = "3.0"
+tokio-test = "0.4"
+criterion = "0.5"
+proptest = "1.0"
+serial_test = "3.0"
+
+[[bench]]
+name = "power_consumption"
+harness = false
+
+[[bench]]
+name = "transmission_reliability"
+harness = false

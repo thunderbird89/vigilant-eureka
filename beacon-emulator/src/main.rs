@@ -1,0 +1,1768 @@
+use beacon_emulator::{
+    cli::{Cli, EmulatorCommand, ListFormat, ConfigFormat, ScenarioTemplate},
+    EmulatorManager, EmulatorError, MovementPattern, MovementPatternValidator,
+    daemon_protocol::{DaemonCommand, DaemonResponse, is_daemon_running, send_daemon_command},
+    daemon_server::DaemonServer,
+    monitor::{BeaconMonitor, MonitorConfig},
+    batch::{BatchExecutor, load_batch_config},
+    scenario_templates::{generate_scenario_config, generate_all_scenarios},
+};
+use clap::Parser;
+use shared_positioning::{GeodeticPosition, BeaconConfig};
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
+use tokio::time::sleep;
+use tracing::{info, error, warn, debug};
+use tracing_subscriber::{EnvFilter, fmt};
+use uuid::Uuid;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse CLI arguments first to get log level
+    let cli = Cli::parse();
+    
+    // Initialize logging with specified level, considering quiet mode
+    let log_level = if cli.quiet {
+        "error" // Only show errors in quiet mode
+    } else {
+        match cli.log_level.to_lowercase().as_str() {
+            "trace" => "trace",
+            "debug" => "debug", 
+            "info" => "info",
+            "warn" => "warn",
+            "error" => "error",
+            _ => {
+                if !cli.quiet {
+                    eprintln!("Invalid log level '{}', using 'info'", cli.log_level);
+                }
+                "info"
+            }
+        }
+    };
+    
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
+    
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
+    info!("Starting beacon emulator on channel: {}", cli.channel);
+    
+    // Check if this is a daemon command or if daemon is running
+    let daemon_running = is_daemon_running().await;
+    
+    match &cli.command {
+        EmulatorCommand::Daemon { .. } => {
+            if daemon_running {
+                eprintln!("Daemon is already running. Stop it first or use a different state file.");
+                std::process::exit(1);
+            }
+            
+            // Create emulator manager for daemon mode
+            let mut emulator = match EmulatorManager::new_with_persistence(&cli.channel).await {
+                Ok(mut manager) => {
+                    // Set custom state file path if provided
+                    if let Some(ref state_file_path) = cli.state_file {
+                        manager.set_state_file_path(state_file_path.clone());
+                        // Reload state from the new path
+                        if let Err(e) = manager.load_state().await {
+                            warn!("Failed to load state from custom path: {}", e);
+                        }
+                    }
+                    debug!("Loaded existing emulator state");
+                    manager
+                }
+                Err(e) => {
+                    warn!("Failed to load existing state, starting fresh: {}", e);
+                    let mut manager = EmulatorManager::new(&cli.channel);
+                    // Set custom state file path if provided
+                    if let Some(ref state_file_path) = cli.state_file {
+                        manager.set_state_file_path(state_file_path.clone());
+                    }
+                    manager
+                }
+            };
+            
+            // Execute daemon command directly
+            let command = cli.command.clone();
+            match execute_command(&mut emulator, command, &cli).await {
+                Ok(()) => {
+                    debug!("Command completed successfully");
+                }
+                Err(e) => {
+                    error!("Command failed: {}", e);
+                    if !cli.quiet {
+                        print_error_help(&e);
+                    }
+                    let exit_code = if cli.automation_mode {
+                        get_automation_exit_code(&e)
+                    } else {
+                        1
+                    };
+                    std::process::exit(exit_code);
+                }
+            }
+        }
+        _ => {
+            // For non-daemon commands, check if daemon is running
+            if daemon_running {
+                // Send command to daemon
+                match execute_daemon_client_command(cli.command).await {
+                    Ok(()) => {
+                        debug!("Command sent to daemon successfully");
+                    }
+                    Err(e) => {
+                        error!("Failed to communicate with daemon: {}", e);
+                        let exit_code = if cli.automation_mode { 1 } else { 1 };
+                        std::process::exit(exit_code);
+                    }
+                }
+            } else {
+                // No daemon running, execute command directly (legacy mode)
+                warn!("No daemon running. Commands will execute in legacy mode.");
+                warn!("For better experience, start daemon with: beacon-emulator daemon");
+                
+                let mut emulator = match EmulatorManager::new_with_persistence(&cli.channel).await {
+                    Ok(mut manager) => {
+                        if let Some(ref state_file_path) = cli.state_file {
+                            manager.set_state_file_path(state_file_path.clone());
+                            if let Err(e) = manager.load_state().await {
+                                warn!("Failed to load state from custom path: {}", e);
+                            }
+                        }
+                        manager
+                    }
+                    Err(e) => {
+                        warn!("Failed to load existing state, starting fresh: {}", e);
+                        let mut manager = EmulatorManager::new(&cli.channel);
+                        if let Some(ref state_file_path) = cli.state_file {
+                            manager.set_state_file_path(state_file_path.clone());
+                        }
+                        manager
+                    }
+                };
+                
+                let command = cli.command.clone();
+                match execute_command(&mut emulator, command, &cli).await {
+                    Ok(()) => {
+                        debug!("Command completed successfully");
+                    }
+                    Err(e) => {
+                        error!("Command failed: {}", e);
+                        if !cli.quiet {
+                            print_error_help(&e);
+                        }
+                        let exit_code = if cli.automation_mode {
+                            get_automation_exit_code(&e)
+                        } else {
+                            1
+                        };
+                        std::process::exit(exit_code);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Graceful shutdown handled by individual command execution
+    debug!("Shutting down emulator");
+    
+    Ok(())
+}
+
+async fn execute_command(
+    emulator: &mut EmulatorManager,
+    command: EmulatorCommand,
+    cli_flags: &Cli,
+) -> Result<(), EmulatorError> {
+    match command {
+        EmulatorCommand::Create {
+            id,
+            lat,
+            lon,
+            depth,
+            config,
+            interval,
+            version: _version, // TODO: Use version when implementing message building
+            movement,
+            start,
+        } => {
+            execute_create_command(emulator, id, lat, lon, depth, config, interval, movement, start).await
+        }
+        
+        EmulatorCommand::List { detailed, running_only, format } => {
+            execute_list_command(emulator, detailed, running_only, format).await
+        }
+        
+        EmulatorCommand::Stop { id, remove } => {
+            execute_stop_command(emulator, id, remove).await
+        }
+        
+        EmulatorCommand::StopAll { remove } => {
+            execute_stop_all_command(emulator, remove).await
+        }
+        
+        EmulatorCommand::Update { id, position, interval, movement, restart } => {
+            execute_update_command(emulator, id, position, interval, movement, restart).await
+        }
+        
+        EmulatorCommand::Start { id, all } => {
+            execute_start_command(emulator, id, all).await
+        }
+        
+        EmulatorCommand::Remove { id, force } => {
+            execute_remove_command(emulator, id, force).await
+        }
+        
+        EmulatorCommand::Scenario { scenario_type, count, spacing, center, start_all, interval } => {
+            execute_scenario_command(emulator, scenario_type, count, spacing, center, start_all, interval).await
+        }
+        
+        EmulatorCommand::Monitor { beacon, interval, compact, show_messages } => {
+            execute_monitor_command(emulator, beacon, interval, compact, show_messages).await
+        }
+        
+        EmulatorCommand::Export { output, format, duration, all_time, beacon, include_messages } => {
+            execute_export_command(emulator, output, format, duration, all_time, beacon, include_messages).await
+        }
+        
+        EmulatorCommand::Status { detailed } => {
+            execute_status_command(emulator, detailed).await
+        }
+        
+        EmulatorCommand::Clear { confirm } => {
+            execute_clear_command(emulator, confirm, cli_flags.non_interactive).await
+        }
+        
+        EmulatorCommand::Daemon { status_interval, auto_start, background } => {
+            execute_daemon_command(emulator, status_interval, auto_start, background).await
+        }
+        
+        EmulatorCommand::GenerateTemplate { output, format, emulator: is_emulator, lat, lon, depth } => {
+            execute_generate_template_command(emulator, output, format, is_emulator, lat, lon, depth).await
+        }
+        
+        EmulatorCommand::ValidateConfig { config, emulator: is_emulator, verbose } => {
+            execute_validate_config_command(emulator, config, is_emulator, verbose).await
+        }
+        
+        EmulatorCommand::ConvertConfig { input, output, validate } => {
+            execute_convert_config_command(emulator, input, output, validate).await
+        }
+        
+        EmulatorCommand::Batch { file, dry_run, timeout, continue_on_error, verbose } => {
+            execute_batch_command(emulator, file, dry_run, timeout, continue_on_error, verbose).await
+        }
+        
+        EmulatorCommand::Reset { force, clean_configs, state_file } => {
+            execute_reset_command(emulator, force, clean_configs, state_file, cli_flags.non_interactive, cli_flags.quiet).await
+        }
+        
+        EmulatorCommand::GenerateScenario { template, output, beacon_count, area_size, duration, include_receiver } => {
+            execute_generate_scenario_command(emulator, template, output, beacon_count, area_size, duration, include_receiver).await
+        }
+        
+        EmulatorCommand::Performance { detailed, export, reset } => {
+            execute_performance_command(emulator, detailed, export, reset).await
+        }
+        
+        EmulatorCommand::Optimize { 
+            global_rate_limit, 
+            per_beacon_rate_limit, 
+            collision_avoidance, 
+            collision_window, 
+            auto_optimization, 
+            show_config, 
+            recommendations 
+        } => {
+            execute_optimize_command(
+                emulator, 
+                global_rate_limit, 
+                per_beacon_rate_limit, 
+                collision_avoidance, 
+                collision_window, 
+                auto_optimization, 
+                show_config, 
+                recommendations
+            ).await
+        }
+        
+        EmulatorCommand::Memory { breakdown, cleanup, gc, warning_threshold, stats } => {
+            execute_memory_command(emulator, breakdown, cleanup, gc, warning_threshold, stats).await
+        }
+    }
+}
+
+async fn execute_create_command(
+    emulator: &mut EmulatorManager,
+    id: Option<Uuid>,
+    lat: f64,
+    lon: f64,
+    depth: f64,
+    config_path: Option<std::path::PathBuf>,
+    interval: u32,
+    movement: MovementPattern,
+    start: bool,
+) -> Result<(), EmulatorError> {
+    // Validate movement pattern
+    MovementPatternValidator::validate_pattern(&movement)?;
+    
+    // Create position
+    let position = GeodeticPosition {
+        latitude: lat,
+        longitude: lon,
+        depth,
+    };
+    
+    // Validate position
+    MovementPatternValidator::validate_position(position)?;
+    
+    // Load configuration if provided
+    let config = if let Some(config_path) = config_path {
+        if !config_path.exists() {
+            return Err(EmulatorError::IoError(
+                std::io::Error::new(std::io::ErrorKind::NotFound, "Configuration file not found")
+            ));
+        }
+        Some(emulator.load_beacon_config(&config_path).await?)
+    } else {
+        // Create default config with custom interval
+        let beacon_id = id.unwrap_or_else(Uuid::new_v4);
+        let mut config = BeaconConfig::new(beacon_id);
+        config.transmission.interval_ms = interval;
+        Some(config)
+    };
+    
+    // Create beacon
+    let beacon_id = emulator.create_beacon(id, position, config).await?;
+    
+    // Set movement pattern
+    emulator.update_beacon_movement_pattern(beacon_id, movement.clone()).await?;
+    
+    println!("Created beacon {} at position ({:.6}, {:.6}, {:.1}m)", 
+             beacon_id, lat, lon, depth);
+    println!("Movement pattern: {}", movement);
+    
+    // Start beacon if requested
+    if start {
+        emulator.start_beacon(beacon_id).await?;
+        println!("Started beacon {}", beacon_id);
+    } else {
+        println!("Beacon created but not started. Use 'start {}' to begin transmission.", beacon_id);
+    }
+    
+    Ok(())
+}
+
+async fn execute_list_command(
+    emulator: &EmulatorManager,
+    detailed: bool,
+    running_only: bool,
+    format: ListFormat,
+) -> Result<(), EmulatorError> {
+    let mut beacons = emulator.list_beacons();
+    
+    if running_only {
+        beacons.retain(|beacon| beacon.is_running);
+    }
+    
+    if beacons.is_empty() {
+        if running_only {
+            println!("No running beacons found.");
+        } else {
+            println!("No beacons found.");
+        }
+        return Ok(());
+    }
+    
+    match format {
+        ListFormat::Table => {
+            print_beacons_table(&beacons, detailed);
+        }
+        ListFormat::Json => {
+            let json = serde_json::to_string_pretty(&beacons)?;
+            println!("{}", json);
+        }
+        ListFormat::Csv => {
+            print_beacons_csv(&beacons, detailed)?;
+        }
+    }
+    
+    Ok(())
+}
+
+fn print_beacons_table(beacons: &[beacon_emulator::VirtualBeaconStatus], detailed: bool) {
+    if detailed {
+        for beacon in beacons {
+            println!("Beacon ID: {}", beacon.id);
+            let status_msg = if beacon.is_running { 
+                "Running (actively transmitting)" 
+            } else { 
+                "Stopped (use 'daemon' mode to actually run)" 
+            };
+            println!("  Status: {}", status_msg);
+            println!("  Position: {:.6}, {:.6}, {:.1}m", 
+                     beacon.position.latitude, beacon.position.longitude, beacon.position.depth);
+            println!("  Movement: {}", beacon.movement_pattern);
+            println!("  Messages sent: {}", beacon.stats.messages_sent);
+            println!("  Interval: {}ms", beacon.config.transmission.interval_ms);
+            if let Some(last_tx) = beacon.stats.last_transmission {
+                if let Ok(elapsed) = last_tx.elapsed() {
+                    println!("  Last transmission: {:.1}s ago", elapsed.as_secs_f64());
+                }
+            }
+            println!();
+        }
+    } else {
+        println!("{:<36} {:<12} {:<20} {:<30} {:<10}", 
+                 "ID", "Status", "Position", "Movement", "Messages");
+        println!("{}", "-".repeat(114));
+        
+        for beacon in beacons {
+            let status = if beacon.is_running { "Running*" } else { "Intended" };
+            let position = format!("{:.3},{:.3},{:.0}m", 
+                                 beacon.position.latitude, beacon.position.longitude, beacon.position.depth);
+            let movement = format!("{}", beacon.movement_pattern);
+            let movement_truncated = if movement.len() > 28 {
+                format!("{}...", &movement[..25])
+            } else {
+                movement
+            };
+            
+            println!("{:<36} {:<12} {:<20} {:<30} {:<10}", 
+                     beacon.id, status, position, movement_truncated, beacon.stats.messages_sent);
+        }
+        
+        if beacons.iter().any(|b| !b.is_running) {
+            println!("\n* Running = actively transmitting (daemon mode)");
+            println!("  Intended = configured to run but not actively transmitting");
+            println!("  Use 'beacon-emulator daemon' to actually run beacons");
+        }
+    }
+}
+
+fn print_beacons_csv(beacons: &[beacon_emulator::VirtualBeaconStatus], detailed: bool) -> Result<(), EmulatorError> {
+    if detailed {
+        println!("id,status,latitude,longitude,depth,movement,messages_sent,interval_ms,last_transmission");
+        for beacon in beacons {
+            let last_tx = beacon.stats.last_transmission
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_else(|| "".to_string());
+            
+            println!("{},{},{},{},{},{},{},{},{}",
+                     beacon.id,
+                     if beacon.is_running { "running" } else { "stopped" },
+                     beacon.position.latitude,
+                     beacon.position.longitude,
+                     beacon.position.depth,
+                     beacon.movement_pattern,
+                     beacon.stats.messages_sent,
+                     beacon.config.transmission.interval_ms,
+                     last_tx);
+        }
+    } else {
+        println!("id,status,latitude,longitude,depth,messages_sent");
+        for beacon in beacons {
+            println!("{},{},{},{},{},{}",
+                     beacon.id,
+                     if beacon.is_running { "running" } else { "stopped" },
+                     beacon.position.latitude,
+                     beacon.position.longitude,
+                     beacon.position.depth,
+                     beacon.stats.messages_sent);
+        }
+    }
+    Ok(())
+}
+
+async fn execute_stop_command(
+    emulator: &mut EmulatorManager,
+    id: Uuid,
+    remove: bool,
+) -> Result<(), EmulatorError> {
+    emulator.stop_beacon(id).await?;
+    println!("Stopped beacon {}", id);
+    
+    if remove {
+        emulator.remove_beacon(id).await?;
+        println!("Removed beacon {}", id);
+    }
+    
+    Ok(())
+}
+
+async fn execute_stop_all_command(
+    emulator: &mut EmulatorManager,
+    remove: bool,
+) -> Result<(), EmulatorError> {
+    let stopped_beacons = emulator.stop_all_beacons().await?;
+    
+    if stopped_beacons.is_empty() {
+        println!("No running beacons to stop.");
+    } else {
+        println!("Stopped {} beacon(s): {:?}", stopped_beacons.len(), stopped_beacons);
+    }
+    
+    if remove {
+        let mut removed_count = 0;
+        for beacon_id in stopped_beacons {
+            if emulator.remove_beacon(beacon_id).await.is_ok() {
+                removed_count += 1;
+            }
+        }
+        println!("Removed {} beacon(s)", removed_count);
+    }
+    
+    Ok(())
+}
+
+async fn execute_update_command(
+    emulator: &mut EmulatorManager,
+    id: Uuid,
+    position: Option<GeodeticPosition>,
+    interval: Option<u32>,
+    movement: Option<MovementPattern>,
+    restart: bool,
+) -> Result<(), EmulatorError> {
+    // Check if beacon exists
+    let beacon_status = emulator.get_beacon_status(id)?;
+    let was_running = beacon_status.is_running;
+    
+    // Update position if provided
+    if let Some(new_position) = position {
+        MovementPatternValidator::validate_position(new_position)?;
+        emulator.update_beacon_position(id, new_position).await?;
+        println!("Updated position for beacon {} to ({:.6}, {:.6}, {:.1}m)", 
+                 id, new_position.latitude, new_position.longitude, new_position.depth);
+    }
+    
+    // Update movement pattern if provided
+    if let Some(new_movement) = movement {
+        MovementPatternValidator::validate_pattern(&new_movement)?;
+        emulator.update_beacon_movement_pattern(id, new_movement.clone()).await?;
+        println!("Updated movement pattern for beacon {} to: {}", id, new_movement);
+    }
+    
+    // Update interval if provided (requires restart)
+    if let Some(new_interval) = interval {
+        if new_interval < 100 || new_interval > 300_000 {
+            return Err(EmulatorError::ConfigError(
+                "Interval must be between 100 and 300000 milliseconds".to_string()
+            ));
+        }
+        
+        // Get current config and update interval
+        let mut config = beacon_status.config;
+        config.transmission.interval_ms = new_interval;
+        emulator.update_beacon_config(id, config).await?;
+        
+        println!("Updated transmission interval for beacon {} to {}ms", id, new_interval);
+        
+        if was_running && !restart {
+            println!("Note: Beacon must be restarted for interval changes to take effect. Use --restart flag.");
+        }
+    }
+    
+    // Restart beacon if requested and it was running
+    if restart && was_running {
+        emulator.stop_beacon(id).await?;
+        sleep(Duration::from_millis(100)).await; // Brief pause
+        emulator.start_beacon(id).await?;
+        println!("Restarted beacon {}", id);
+    }
+    
+    Ok(())
+}
+
+async fn execute_start_command(
+    emulator: &mut EmulatorManager,
+    id: Option<Uuid>,
+    all: bool,
+) -> Result<(), EmulatorError> {
+    if all {
+        let started_beacons = emulator.start_all_beacons().await?;
+        if started_beacons.is_empty() {
+            println!("No stopped beacons to start.");
+        } else {
+            println!("Started {} beacon(s): {:?}", started_beacons.len(), started_beacons);
+        }
+    } else if let Some(beacon_id) = id {
+        emulator.start_beacon(beacon_id).await?;
+        println!("Started beacon {}", beacon_id);
+    } else {
+        return Err(EmulatorError::ConfigError(
+            "Either specify a beacon ID or use --all flag".to_string()
+        ));
+    }
+    
+    Ok(())
+}
+
+async fn execute_remove_command(
+    emulator: &mut EmulatorManager,
+    id: Uuid,
+    force: bool,
+) -> Result<(), EmulatorError> {
+    if force {
+        // Stop beacon first if running
+        let status = emulator.get_beacon_status(id)?;
+        if status.is_running {
+            emulator.stop_beacon(id).await?;
+            println!("Stopped beacon {} before removal", id);
+        }
+    }
+    
+    emulator.remove_beacon(id).await?;
+    println!("Removed beacon {}", id);
+    
+    Ok(())
+}
+
+async fn execute_scenario_command(
+    emulator: &mut EmulatorManager,
+    scenario_type: beacon_emulator::ScenarioType,
+    count: usize,
+    spacing: f64,
+    center: GeodeticPosition,
+    start_all: bool,
+    _interval: u32,
+) -> Result<(), EmulatorError> {
+    // Validate parameters
+    MovementPatternValidator::validate_position(center)?;
+    
+    if spacing <= 0.0 || spacing > 10000.0 {
+        return Err(EmulatorError::InvalidScenario(
+            "Spacing must be between 0 and 10000 meters".to_string()
+        ));
+    }
+    
+    // Create scenario
+    let beacon_ids = emulator.create_scenario(scenario_type.clone(), count, spacing, center).await?;
+    
+    println!("Created {} scenario with {} beacons:", scenario_type, beacon_ids.len());
+    for (i, beacon_id) in beacon_ids.iter().enumerate() {
+        println!("  Beacon {}: {}", i + 1, beacon_id);
+    }
+    
+    // Start all beacons if requested
+    if start_all {
+        let mut started_count = 0;
+        for beacon_id in &beacon_ids {
+            if emulator.start_beacon(*beacon_id).await.is_ok() {
+                started_count += 1;
+            }
+        }
+        println!("Started {} out of {} beacons", started_count, beacon_ids.len());
+    } else {
+        println!("Beacons created but not started. Use 'start --all' to begin transmission.");
+    }
+    
+    Ok(())
+}
+
+async fn execute_monitor_command(
+    emulator: &EmulatorManager,
+    beacon_id: Option<Uuid>,
+    interval: u64,
+    compact: bool,
+    show_messages: bool,
+) -> Result<(), EmulatorError> {
+    // Create monitor configuration from CLI arguments
+    let config = MonitorConfig::from_cli_args(beacon_id, interval, compact, show_messages);
+    
+    // Create enhanced beacon monitor
+    let mut monitor = BeaconMonitor::new(emulator)
+        .with_update_interval(Duration::from_secs(config.update_interval_secs))
+        .with_compact_mode(config.compact_mode)
+        .with_message_display(config.show_messages)
+        .with_health_indicators(config.show_health)
+        .with_position_history(config.show_position_history);
+    
+    // Apply beacon filter if specified
+    if let Some(beacon_id) = config.beacon_filter {
+        monitor = monitor.with_beacon_filter(beacon_id);
+    }
+    
+    // Apply channel filter if specified
+    if let Some(channel) = config.channel_filter {
+        monitor = monitor.with_channel_filter(channel);
+    }
+    
+    // Start monitoring
+    monitor.start_monitoring().await
+}
+
+
+
+async fn execute_export_command(
+    emulator: &EmulatorManager,
+    output: std::path::PathBuf,
+    format: beacon_emulator::ExportFormat,
+    duration: u64,
+    all_time: bool,
+    beacon_id: Option<Uuid>,
+    include_messages: bool,
+) -> Result<(), EmulatorError> {
+    println!("Exporting beacon data to {} (format: {})...", output.display(), format);
+    
+    let exported_count = emulator.export_logs(
+        &output,
+        format,
+        duration,
+        all_time,
+        beacon_id,
+        include_messages,
+    ).await?;
+    
+    println!("Successfully exported {} log entries to {}", exported_count, output.display());
+    
+    if let Some(id) = beacon_id {
+        println!("Filtered by beacon: {}", id);
+    }
+    
+    if all_time {
+        println!("Exported all available data");
+    } else {
+        println!("Exported data from the last {} seconds", duration);
+    }
+    
+    if include_messages {
+        println!("Included full message content in export");
+    }
+    
+    Ok(())
+}
+
+async fn execute_status_command(
+    emulator: &EmulatorManager,
+    detailed: bool,
+) -> Result<(), EmulatorError> {
+    let stats = emulator.get_manager_stats().await;
+    
+    println!("Beacon Emulator Status");
+    println!("=====================");
+    println!("Channel: {}", stats.current_channel);
+    println!("State file: {}", emulator.get_state_file_path().display());
+    println!("Total beacons: {}", stats.total_beacons);
+    println!("Running beacons: {}", stats.running_beacons);
+    println!("Stopped beacons: {}", stats.stopped_beacons);
+    println!("Active channels: {}", stats.active_channels);
+    
+    if detailed {
+        println!();
+        println!("Channel names: {:?}", stats.channel_names);
+        
+        let beacons = emulator.list_beacons();
+        if !beacons.is_empty() {
+            println!();
+            println!("Beacon Details:");
+            for beacon in beacons {
+                println!("  {} - {} - {} messages", 
+                         beacon.id, 
+                         if beacon.is_running { "Running" } else { "Stopped" },
+                         beacon.stats.messages_sent);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+async fn execute_clear_command(
+    emulator: &mut EmulatorManager,
+    confirm: bool,
+    non_interactive: bool,
+) -> Result<(), EmulatorError> {
+    if !confirm && !non_interactive {
+        print!("This will stop and remove all beacons and clear the state file. Continue? (y/N): ");
+        io::stdout().flush().unwrap();
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        
+        if !input.trim().to_lowercase().starts_with('y') {
+            println!("Operation cancelled.");
+            return Ok(());
+        }
+    }
+    
+    let beacon_count = emulator.get_total_beacon_count();
+    
+    emulator.clear_state().await?;
+    
+    println!("Cleared {} beacon(s) and reset emulator state.", beacon_count);
+    
+    Ok(())
+}
+
+fn get_automation_exit_code(e: &EmulatorError) -> i32 {
+    match e {
+        EmulatorError::BeaconNotFound(_) => 2, // Warning-level error
+        EmulatorError::BeaconExists(_) => 2,   // Warning-level error
+        EmulatorError::ConfigError(_) => 1,    // Error
+        EmulatorError::MovementError(_) => 1,  // Error
+        EmulatorError::InvalidScenario(_) => 1, // Error
+        EmulatorError::IoError(_) => 1,        // Error
+        _ => 1, // Default to error
+    }
+}
+
+fn print_error_help(e: &EmulatorError) {
+    match e {
+        EmulatorError::BeaconNotFound(id) => {
+            eprintln!("Beacon {} not found. Use 'list' command to see available beacons.", id);
+        }
+        EmulatorError::BeaconExists(id) => {
+            eprintln!("Beacon {} already exists. Use a different ID or update the existing beacon.", id);
+        }
+        EmulatorError::ConfigError(msg) => {
+            eprintln!("Configuration error: {}", msg);
+            eprintln!("Check your configuration file format and parameter values.");
+        }
+        EmulatorError::MovementError(msg) => {
+            eprintln!("Movement pattern error: {}", msg);
+            eprintln!("Valid patterns: stationary, linear:speed:bearing, circular:radius:period, random:max_speed");
+        }
+        EmulatorError::InvalidScenario(msg) => {
+            eprintln!("Scenario error: {}", msg);
+            eprintln!("Valid scenarios: triangle, square, line, grid");
+        }
+        _ => {
+            eprintln!("Error: {}", e);
+        }
+    }
+}
+
+async fn execute_batch_command(
+    emulator: &mut EmulatorManager,
+    file: PathBuf,
+    dry_run: bool,
+    _timeout: u64,
+    _continue_on_error: bool,
+    verbose: bool,
+) -> Result<(), EmulatorError> {
+    // Load batch configuration
+    let config = load_batch_config(&file).await?;
+    
+    // Create batch executor
+    let mut executor = BatchExecutor::new(emulator).with_verbose(verbose);
+    
+    if dry_run {
+        // Validate configuration without executing
+        let warnings = executor.validate_batch(&config)?;
+        
+        println!("Batch configuration validation completed successfully.");
+        println!("Total operations: {}", config.operations.len());
+        
+        if !warnings.is_empty() {
+            println!("\nWarnings:");
+            for warning in warnings {
+                println!("  - {}", warning);
+            }
+        }
+        
+        println!("\nOperations to be executed:");
+        for (index, operation) in config.operations.iter().enumerate() {
+            println!("  {}: {:?}", index + 1, operation);
+        }
+        
+        return Ok(());
+    }
+    
+    // Execute batch operations
+    let result = executor.execute_batch(config).await?;
+    
+    // Print results
+    println!("Batch execution completed:");
+    println!("  Total operations: {}", result.total_operations);
+    println!("  Successful: {}", result.successful_operations);
+    println!("  Failed: {}", result.failed_operations);
+    println!("  Execution time: {:.2}s", result.execution_time.as_secs_f64());
+    
+    if verbose {
+        println!("\nOperation details:");
+        for op_result in result.operation_results {
+            let status = if op_result.success { "✓" } else { "✗" };
+            println!("  {} Operation {}: {} ({:.2}s) - {}", 
+                     status, op_result.operation_index + 1, op_result.operation_type,
+                     op_result.execution_time.as_secs_f64(), op_result.message);
+        }
+    }
+    
+    if result.failed_operations > 0 {
+        return Err(EmulatorError::ConfigError(
+            format!("{} operations failed", result.failed_operations)
+        ));
+    }
+    
+    Ok(())
+}
+
+async fn execute_reset_command(
+    emulator: &mut EmulatorManager,
+    force: bool,
+    clean_configs: bool,
+    state_file: Option<PathBuf>,
+    non_interactive: bool,
+    quiet: bool,
+) -> Result<(), EmulatorError> {
+    if !force && !non_interactive {
+        print!("This will stop all beacons, clear state, and reset the emulator. Continue? (y/N): ");
+        io::stdout().flush().unwrap();
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        
+        if !input.trim().to_lowercase().starts_with('y') {
+            println!("Reset cancelled.");
+            return Ok(());
+        }
+    }
+    
+    // Get current beacon count before clearing
+    let beacon_count = emulator.get_total_beacon_count();
+    
+    // Stop all beacons and clear state
+    let stopped_beacons = emulator.stop_all_beacons().await?;
+    emulator.clear_state().await?;
+    
+    // Clean configuration files if requested
+    if clean_configs {
+        // Remove generated config files (be careful not to remove user configs)
+        let config_patterns = vec![
+            "data/generated_*.toml",
+            "data/generated_*.json",
+            "data/test_*.toml",
+            "data/test_*.json",
+        ];
+        
+        let mut removed_files = 0;
+        for pattern in config_patterns {
+            if let Ok(entries) = glob::glob(pattern) {
+                for entry in entries.flatten() {
+                    if std::fs::remove_file(&entry).is_ok() {
+                        removed_files += 1;
+                        if !quiet { // Only print if not in quiet mode
+                            println!("Removed config file: {}", entry.display());
+                        }
+                    }
+                }
+            }
+        }
+        
+        if removed_files > 0 {
+            println!("Removed {} generated configuration files", removed_files);
+        }
+    }
+    
+    // Handle custom state file
+    if let Some(custom_state_file) = state_file {
+        if custom_state_file.exists() {
+            std::fs::remove_file(&custom_state_file)
+                .map_err(|e| EmulatorError::IoError(e))?;
+            println!("Removed custom state file: {}", custom_state_file.display());
+        }
+    }
+    
+    println!("Reset completed:");
+    println!("  Stopped {} beacons", stopped_beacons.len());
+    println!("  Cleared {} total beacons from registry", beacon_count);
+    println!("  Reset emulator state");
+    
+    if clean_configs {
+        println!("  Cleaned generated configuration files");
+    }
+    
+    Ok(())
+}
+
+async fn execute_generate_scenario_command(
+    _emulator: &EmulatorManager,
+    template: ScenarioTemplate,
+    output: PathBuf,
+    beacon_count: Option<usize>,
+    area_size: Option<f64>,
+    duration: Option<u64>,
+    include_receiver: bool,
+) -> Result<(), EmulatorError> {
+    match template {
+        ScenarioTemplate::All => {
+            // Generate all scenario templates
+            let generated_files = generate_all_scenarios(&output, beacon_count, area_size, duration)
+                .map_err(|e| EmulatorError::ConfigError(e))?;
+            
+            // Create output directory if it doesn't exist
+            if !output.exists() {
+                std::fs::create_dir_all(&output)
+                    .map_err(|e| EmulatorError::IoError(e))?;
+            }
+            
+            // Write each scenario to a file
+            for (i, file_path) in generated_files.iter().enumerate() {
+                let template_type = match i {
+                    0 => ScenarioTemplate::Performance,
+                    1 => ScenarioTemplate::Accuracy,
+                    2 => ScenarioTemplate::Stress,
+                    3 => ScenarioTemplate::Integration,
+                    4 => ScenarioTemplate::Custom,
+                    _ => continue,
+                };
+                
+                let config = generate_scenario_config(template_type, beacon_count, area_size, duration, include_receiver)
+                    .map_err(|e| EmulatorError::ConfigError(e))?;
+                
+                let json_content = serde_json::to_string_pretty(&config)
+                    .map_err(|e| EmulatorError::ConfigError(format!("JSON serialization failed: {}", e)))?;
+                
+                tokio::fs::write(file_path, json_content).await
+                    .map_err(|e| EmulatorError::IoError(e))?;
+                
+                println!("Generated scenario: {}", file_path.display());
+            }
+            
+            println!("Generated {} scenario templates in {}", generated_files.len(), output.display());
+        }
+        
+        _ => {
+            // Generate single scenario template
+            let config = generate_scenario_config(template.clone(), beacon_count, area_size, duration, include_receiver)
+                .map_err(|e| EmulatorError::ConfigError(e))?;
+            
+            let json_content = serde_json::to_string_pretty(&config)
+                .map_err(|e| EmulatorError::ConfigError(format!("JSON serialization failed: {}", e)))?;
+            
+            // Create parent directory if it doesn't exist
+            if let Some(parent) = output.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| EmulatorError::IoError(e))?;
+                }
+            }
+            
+            tokio::fs::write(&output, json_content).await
+                .map_err(|e| EmulatorError::IoError(e))?;
+            
+            println!("Generated {} scenario template: {}", 
+                     match template {
+                         ScenarioTemplate::Performance => "performance",
+                         ScenarioTemplate::Accuracy => "accuracy", 
+                         ScenarioTemplate::Stress => "stress",
+                         ScenarioTemplate::Integration => "integration",
+                         ScenarioTemplate::Custom => "custom",
+                         _ => "unknown",
+                     },
+                     output.display());
+            
+            println!("Scenario: {}", config.name);
+            println!("Description: {}", config.description);
+            println!("Operations: {}", config.batch_config.operations.len());
+            
+            if include_receiver && config.receiver_config.is_some() {
+                println!("Includes virtual receiver configuration");
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+async fn execute_daemon_client_command(command: EmulatorCommand) -> Result<(), Box<dyn std::error::Error>> {
+    let daemon_command = match command {
+        EmulatorCommand::Create { id, lat, lon, depth, config, interval, version: _, movement, start } => {
+            let position = GeodeticPosition { latitude: lat, longitude: lon, depth };
+            DaemonCommand::CreateBeacon { id, position, config_path: config, interval, movement, start }
+        }
+        
+        EmulatorCommand::Start { id, all } => {
+            if all {
+                DaemonCommand::StartAllBeacons
+            } else if let Some(beacon_id) = id {
+                DaemonCommand::StartBeacon { id: beacon_id }
+            } else {
+                return Err("Either specify a beacon ID or use --all flag".into());
+            }
+        }
+        
+        EmulatorCommand::Stop { id, remove } => {
+            DaemonCommand::StopBeacon { id, remove }
+        }
+        
+        EmulatorCommand::StopAll { remove } => {
+            DaemonCommand::StopAllBeacons { remove }
+        }
+        
+        EmulatorCommand::Remove { id, force } => {
+            DaemonCommand::RemoveBeacon { id, force }
+        }
+        
+        EmulatorCommand::Update { id, position, interval, movement, restart } => {
+            DaemonCommand::UpdateBeacon { id, position, interval, movement, restart }
+        }
+        
+        EmulatorCommand::List { detailed, running_only, format: _ } => {
+            DaemonCommand::ListBeacons { detailed, running_only }
+        }
+        
+        EmulatorCommand::Status { detailed } => {
+            DaemonCommand::GetStatus { detailed }
+        }
+        
+        EmulatorCommand::Scenario { scenario_type, count, spacing, center, start_all, interval } => {
+            DaemonCommand::CreateScenario { scenario_type, count, spacing, center, start_all, interval }
+        }
+        
+        EmulatorCommand::Export { output, format, duration, all_time, beacon, include_messages } => {
+            DaemonCommand::ExportLogs { output, format, duration, all_time, beacon, include_messages }
+        }
+        
+        EmulatorCommand::Clear { confirm } => {
+            DaemonCommand::ClearState { confirm }
+        }
+        
+        EmulatorCommand::Monitor { .. } => {
+            return Err("Monitor command not supported with daemon. Use 'daemon' mode for real-time monitoring.".into());
+        }
+        
+        EmulatorCommand::Daemon { .. } => {
+            return Err("Daemon command should not reach here".into());
+        }
+        
+        EmulatorCommand::GenerateTemplate { .. } |
+        EmulatorCommand::ValidateConfig { .. } |
+        EmulatorCommand::ConvertConfig { .. } |
+        EmulatorCommand::Batch { .. } |
+        EmulatorCommand::Reset { .. } |
+        EmulatorCommand::GenerateScenario { .. } |
+        EmulatorCommand::Performance { .. } |
+        EmulatorCommand::Optimize { .. } |
+        EmulatorCommand::Memory { .. } => {
+            return Err("These commands are handled locally and don't require daemon communication".into());
+        }
+    };
+    
+    let response = send_daemon_command(daemon_command).await?;
+    
+    match response {
+        DaemonResponse::Success { message } => {
+            if let Some(msg) = message {
+                println!("{}", msg);
+            }
+        }
+        
+        DaemonResponse::BeaconCreated { id } => {
+            println!("Created beacon {}", id);
+        }
+        
+        DaemonResponse::BeaconsStarted { ids } => {
+            if ids.is_empty() {
+                println!("No stopped beacons to start.");
+            } else {
+                println!("Started {} beacon(s): {:?}", ids.len(), ids);
+            }
+        }
+        
+        DaemonResponse::BeaconsStopped { ids } => {
+            if ids.is_empty() {
+                println!("No running beacons to stop.");
+            } else {
+                println!("Stopped {} beacon(s): {:?}", ids.len(), ids);
+            }
+        }
+        
+        DaemonResponse::BeaconList { beacons } => {
+            if beacons.is_empty() {
+                println!("No beacons found.");
+            } else {
+                print_beacons_table(&beacons, false); // Always use table format for daemon responses
+            }
+        }
+        
+        DaemonResponse::Status { stats } => {
+            println!("Beacon Emulator Status (Daemon Mode)");
+            println!("====================================");
+            println!("Channel: {}", stats.current_channel);
+            println!("Total beacons: {}", stats.total_beacons);
+            println!("Running beacons: {}", stats.running_beacons);
+            println!("Stopped beacons: {}", stats.stopped_beacons);
+            println!("Active channels: {}", stats.active_channels);
+        }
+        
+        DaemonResponse::Error { message } => {
+            eprintln!("Daemon error: {}", message);
+            return Err(message.into());
+        }
+        
+        DaemonResponse::Pong => {
+            println!("Daemon is running");
+        }
+    }
+    
+    Ok(())
+}
+
+async fn execute_daemon_command(
+    emulator: &mut EmulatorManager,
+    status_interval: u64,
+    auto_start: bool,
+    background: bool,
+) -> Result<(), EmulatorError> {
+    if !background {
+        println!("Starting beacon emulator daemon...");
+        println!("Listening for CLI commands...");
+        println!("Press Ctrl+C to stop");
+        println!("{}", "-".repeat(50));
+    }
+    
+    // Start IPC server for virtual receiver connections
+    if let Err(e) = emulator.start_ipc_server(None).await {
+        warn!("Failed to start IPC server: {}", e);
+    } else if !background {
+        println!("IPC server started on port {}", emulator.get_ipc_server_port().unwrap_or(8765));
+    }
+    
+    // Auto-start beacons if requested
+    if auto_start {
+        let started = emulator.start_all_beacons().await?;
+        if !background && !started.is_empty() {
+            println!("Auto-started {} beacon(s): {:?}", started.len(), started);
+        }
+    }
+    
+    // Create daemon server with shared emulator state
+    let emulator_arc = std::sync::Arc::new(tokio::sync::Mutex::new(
+        std::mem::replace(emulator, EmulatorManager::new("temp"))
+    ));
+    let daemon_server = DaemonServer::new_with_shared_state(emulator_arc.clone()).await
+        .map_err(|e| EmulatorError::ConfigError(format!("Failed to create daemon server: {}", e)))?;
+    
+    // Set up Ctrl+C handler
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+        let _ = shutdown_tx.send(()).await;
+    });
+    
+    let mut status_timer = tokio::time::interval(tokio::time::Duration::from_secs(status_interval));
+    
+    // Run daemon server in background
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = daemon_server.run().await {
+            error!("Daemon server error: {}", e);
+        }
+    });
+    
+    // Initialize display
+    if !background {
+        // Hide cursor and clear screen
+        print!("\x1B[?25l\x1B[2J\x1B[1;1H");
+        io::stdout().flush().unwrap();
+    }
+    
+    // Status display loop
+    loop {
+        tokio::select! {
+            _ = status_timer.tick() => {
+                if !background {
+                    display_live_dashboard(&emulator_arc).await;
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                if !background {
+                    // Show cursor and clear line
+                    print!("\x1B[?25h\x1B[2K");
+                    println!("\nShutting down daemon...");
+                }
+                break;
+            }
+        }
+    }
+    
+    // Shutdown server
+    server_handle.abort();
+    
+    if !background {
+        // Restore terminal state
+        print!("\x1B[?25h\x1B[2J\x1B[1;1H");
+        println!("Daemon stopped.");
+        io::stdout().flush().unwrap();
+    }
+    
+    Ok(())
+}
+
+async fn display_live_dashboard(emulator_arc: &std::sync::Arc<tokio::sync::Mutex<EmulatorManager>>) {
+    let emulator = emulator_arc.lock().await;
+    
+    // Move cursor to top-left and clear screen
+    print!("\x1B[1;1H\x1B[0J");
+    
+    // Header
+    println!("┌─────────────────────────────────────────────────────────────────────────────────┐");
+    println!("│                        🚨 Beacon Emulator Daemon                               │");
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    
+    // Status line
+    let stats = emulator.get_manager_stats().await;
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    println!("│ Status: RUNNING │ Time: {} │ Channel: {} │", timestamp, stats.current_channel);
+    println!("│ Socket: {} │", beacon_emulator::daemon_protocol::get_socket_path().display());
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    
+    // Summary stats
+    println!("│ Total: {:>3} │ Running: {:>3} │ Stopped: {:>3} │ Channels: {:>3} │ State: {} │", 
+             stats.total_beacons, 
+             stats.running_beacons, 
+             stats.stopped_beacons, 
+             stats.active_channels,
+             emulator.get_state_file_path().file_name().unwrap_or_default().to_string_lossy());
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    
+    // Beacon list header
+    if stats.total_beacons > 0 {
+        println!("│ ID                                   │ Status  │ Position          │ Messages │");
+        println!("├──────────────────────────────────────┼─────────┼───────────────────┼──────────┤");
+        
+        // Beacon list
+        let beacons = emulator.list_beacons();
+        for beacon in beacons.iter().take(15) { // Limit to 15 beacons to fit on screen
+            let status_icon = if beacon.is_running { "🟢 RUN" } else { "🔴 STP" };
+            let position = format!("{:.3},{:.3},{:.0}m", 
+                                 beacon.position.latitude, 
+                                 beacon.position.longitude, 
+                                 beacon.position.depth);
+            let id_short = format!("{}...{}", 
+                                 &beacon.id.to_string()[..8], 
+                                 &beacon.id.to_string()[28..]);
+            
+            println!("│ {} │ {} │ {:>17} │ {:>8} │", 
+                     id_short, status_icon, position, beacon.stats.messages_sent);
+        }
+        
+        if beacons.len() > 15 {
+            println!("│ ... and {} more beacons (use 'beacon-emulator list' for full list) │", 
+                     beacons.len() - 15);
+        }
+    } else {
+        println!("│                              No beacons configured                             │");
+        println!("│                                                                               │");
+        println!("│  Create beacons using CLI commands in another terminal:                      │");
+        println!("│    beacon-emulator create --lat 32.0 --lon 45.0 --start                     │");
+        println!("│    beacon-emulator create --lat 33.0 --lon 46.0 --movement linear:1.5:45    │");
+    }
+    
+    println!("├─────────────────────────────────────────────────────────────────────────────────┤");
+    println!("│ CLI Commands: list │ create │ start │ stop │ status │ clear │ Ctrl+C to quit   │");
+    println!("└─────────────────────────────────────────────────────────────────────────────────┘");
+    
+    // Add some padding for terminal variations
+    for _ in 0..3 {
+        println!();
+    }
+    
+    io::stdout().flush().unwrap();
+}
+
+/// Execute generate template command
+async fn execute_generate_template_command(
+    emulator: &EmulatorManager,
+    output: PathBuf,
+    format: ConfigFormat,
+    is_emulator: bool,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    depth: f64,
+) -> Result<(), EmulatorError> {
+    if is_emulator {
+        let lat = lat.ok_or_else(|| EmulatorError::ConfigError("Latitude required for emulator template".to_string()))?;
+        let lon = lon.ok_or_else(|| EmulatorError::ConfigError("Longitude required for emulator template".to_string()))?;
+        let position = GeodeticPosition { latitude: lat, longitude: lon, depth };
+        
+        emulator.generate_emulator_config_template(&output, position, format.into()).await?;
+        println!("✅ Generated emulator configuration template: {}", output.display());
+    } else {
+        emulator.generate_config_template(&output, format.into()).await?;
+        println!("✅ Generated beacon configuration template: {}", output.display());
+    }
+    
+    Ok(())
+}
+
+/// Execute validate config command
+async fn execute_validate_config_command(
+    emulator: &EmulatorManager,
+    config: PathBuf,
+    is_emulator: bool,
+    verbose: bool,
+) -> Result<(), EmulatorError> {
+    if !config.exists() {
+        return Err(EmulatorError::ConfigError(
+            format!("Configuration file not found: {}", config.display())
+        ));
+    }
+    
+    if is_emulator {
+        match emulator.load_emulator_beacon_config(&config).await {
+            Ok(emulator_config) => {
+                if verbose {
+                    println!("✅ Emulator configuration is valid");
+                    println!("   Beacon ID: {}", emulator_config.beacon_config.beacon_id);
+                    println!("   Position: {:.6}, {:.6}, {:.1}m", 
+                           emulator_config.initial_position.latitude,
+                           emulator_config.initial_position.longitude,
+                           emulator_config.initial_position.depth);
+                    println!("   Movement: {:?}", emulator_config.movement_pattern);
+                    println!("   Auto-start: {}", emulator_config.auto_start);
+                    println!("   Schema version: {}", emulator_config.metadata.schema_version);
+                } else {
+                    println!("✅ Emulator configuration is valid");
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Emulator configuration validation failed: {}", e);
+                return Err(e);
+            }
+        }
+    } else {
+        match emulator.load_beacon_config(&config).await {
+            Ok(beacon_config) => {
+                if verbose {
+                    println!("✅ Beacon configuration is valid");
+                    println!("   Beacon ID: {}", beacon_config.beacon_id);
+                    println!("   Transmission interval: {}ms", beacon_config.transmission.interval_ms);
+                    println!("   Message version: {:?}", beacon_config.transmission.message_version);
+                    println!("   Power level: {}", beacon_config.transmission.power_level);
+                    println!("   Schema version: {}", beacon_config.metadata.schema_version);
+                } else {
+                    println!("✅ Beacon configuration is valid");
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Beacon configuration validation failed: {}", e);
+                return Err(e);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Execute convert config command
+async fn execute_convert_config_command(
+    emulator: &EmulatorManager,
+    input: PathBuf,
+    output: PathBuf,
+    validate: bool,
+) -> Result<(), EmulatorError> {
+    if !input.exists() {
+        return Err(EmulatorError::ConfigError(
+            format!("Input configuration file not found: {}", input.display())
+        ));
+    }
+    
+    // Load configuration from input file
+    let config = emulator.load_beacon_config(&input).await?;
+    
+    // Validate if requested
+    if validate {
+        emulator.validate_emulator_config(&config)?;
+        println!("✅ Configuration validated successfully");
+    }
+    
+    // Save to output file (format determined by extension)
+    emulator.save_beacon_config(&config, &output).await?;
+    
+    println!("✅ Converted configuration from {} to {}", 
+           input.display(), output.display());
+    
+    Ok(())
+}
+
+/// Execute performance command
+async fn execute_performance_command(
+    emulator: &mut EmulatorManager,
+    detailed: bool,
+    export: Option<PathBuf>,
+    reset: bool,
+) -> Result<(), EmulatorError> {
+    if reset {
+        let monitor = emulator.get_performance_monitor();
+        monitor.reset_metrics().await;
+        println!("Performance metrics reset successfully");
+        return Ok(());
+    }
+    
+    let metrics = emulator.get_performance_metrics().await;
+    
+    if let Some(export_path) = export {
+        // Export metrics to JSON file
+        let json = serde_json::to_string_pretty(&metrics)
+            .map_err(|e| EmulatorError::SerializationError(e))?;
+        tokio::fs::write(&export_path, json).await
+            .map_err(|e| EmulatorError::IoError(e))?;
+        println!("Performance metrics exported to: {}", export_path.display());
+        return Ok(());
+    }
+    
+    // Display performance metrics
+    println!("🚀 Performance Metrics");
+    println!("═══════════════════════");
+    println!("System Status:");
+    println!("  Active Beacons: {}", metrics.active_beacon_count);
+    println!("  Active Channels: {}", metrics.active_channel_count);
+    println!("  Uptime: {:.1}s", metrics.uptime.as_secs_f64());
+    println!();
+    
+    println!("Message Transmission:");
+    println!("  Total Messages: {}", metrics.total_messages_transmitted);
+    println!("  Failed Messages: {}", metrics.total_transmission_failures);
+    println!("  Success Rate: {:.1}%", 
+        if metrics.total_messages_transmitted > 0 {
+            100.0 * (metrics.total_messages_transmitted - metrics.total_transmission_failures) as f64 / metrics.total_messages_transmitted as f64
+        } else {
+            100.0
+        }
+    );
+    println!("  Avg Rate: {:.1} msg/s", metrics.avg_transmission_rate);
+    println!("  Peak Rate: {:.1} msg/s", metrics.peak_transmission_rate);
+    println!();
+    
+    println!("Resource Usage:");
+    println!("  Memory: {:.1} MB", metrics.estimated_memory_usage as f64 / (1024.0 * 1024.0));
+    println!("  Peak Memory: {:.1} MB", metrics.peak_memory_usage as f64 / (1024.0 * 1024.0));
+    println!("  CPU Usage: {:.1}%", metrics.estimated_cpu_usage * 100.0);
+    println!();
+    
+    println!("Rate Limiting:");
+    println!("  Messages Rate Limited: {}", metrics.rate_limiting_stats.messages_rate_limited);
+    println!("  Collision Avoidance: {}", metrics.rate_limiting_stats.collision_avoidance_count);
+    println!("  Avg Delay: {:.1}ms", metrics.rate_limiting_stats.avg_rate_limit_delay_ms);
+    
+    if detailed {
+        println!();
+        println!("Channel Queue Depths:");
+        for (channel, depth) in &metrics.channel_queue_depths {
+            println!("  {}: {} messages", channel, depth);
+        }
+        
+        // Get memory breakdown
+        if let Ok(memory_breakdown) = emulator.get_memory_breakdown().await {
+            println!();
+            println!("Memory Breakdown:");
+            println!("  Total: {:.1} MB", memory_breakdown.total_usage as f64 / (1024.0 * 1024.0));
+            println!("  Beacons: {:.1} MB ({} beacons)", 
+                memory_breakdown.beacon_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.beacon_count
+            );
+            println!("  Channels: {:.1} MB ({} channels)", 
+                memory_breakdown.channel_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.channel_count
+            );
+        }
+        
+        // Get performance recommendations
+        let recommendations = emulator.get_performance_recommendations().await;
+        if !recommendations.is_empty() {
+            println!();
+            println!("Recommendations:");
+            for rec in recommendations {
+                println!("  • {}", rec);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Execute optimize command
+async fn execute_optimize_command(
+    emulator: &mut EmulatorManager,
+    global_rate_limit: Option<f64>,
+    per_beacon_rate_limit: Option<f64>,
+    collision_avoidance: Option<bool>,
+    collision_window: Option<u64>,
+    auto_optimization: Option<bool>,
+    show_config: bool,
+    recommendations: bool,
+) -> Result<(), EmulatorError> {
+    if show_config {
+        let config = emulator.get_performance_config().await;
+        println!("🔧 Performance Configuration");
+        println!("═══════════════════════════");
+        println!("Rate Limiting:");
+        println!("  Global Rate Limit: {:?} msg/s", config.global_rate_limit);
+        println!("  Per-Beacon Rate Limit: {:?} msg/s", config.per_beacon_rate_limit);
+        println!();
+        println!("Collision Avoidance:");
+        println!("  Enabled: {}", config.collision_avoidance_enabled);
+        println!("  Window: {}ms", config.collision_window_ms);
+        println!();
+        println!("Memory Management:");
+        println!("  Warning Threshold: {:.1} MB", config.memory_warning_threshold as f64 / (1024.0 * 1024.0));
+        println!("  Queue Cleanup: {}", config.message_queue_cleanup_enabled);
+        println!("  Cleanup Interval: {}s", config.message_queue_cleanup_interval_s);
+        println!("  Max Queue Size: {}", config.max_message_queue_size);
+        println!();
+        println!("Optimization:");
+        println!("  Auto Optimization: {}", config.auto_optimization_enabled);
+        println!("  Max Concurrent Beacons: {}", config.max_concurrent_beacons);
+        println!("  CPU Warning Threshold: {:.1}%", config.cpu_warning_threshold * 100.0);
+        return Ok(());
+    }
+    
+    if recommendations {
+        let recs = emulator.get_performance_recommendations().await;
+        println!("💡 Performance Recommendations");
+        println!("═══════════════════════════════");
+        if recs.is_empty() {
+            println!("No recommendations at this time. System is performing well!");
+        } else {
+            for (i, rec) in recs.iter().enumerate() {
+                println!("{}. {}", i + 1, rec);
+            }
+        }
+        return Ok(());
+    }
+    
+    // Apply configuration changes
+    let mut config = emulator.get_performance_config().await;
+    let mut changes = Vec::new();
+    
+    if let Some(rate) = global_rate_limit {
+        config.global_rate_limit = Some(rate);
+        changes.push(format!("Global rate limit set to {:.1} msg/s", rate));
+    }
+    
+    if let Some(rate) = per_beacon_rate_limit {
+        config.per_beacon_rate_limit = Some(rate);
+        changes.push(format!("Per-beacon rate limit set to {:.1} msg/s", rate));
+    }
+    
+    if let Some(enabled) = collision_avoidance {
+        config.collision_avoidance_enabled = enabled;
+        changes.push(format!("Collision avoidance {}", if enabled { "enabled" } else { "disabled" }));
+    }
+    
+    if let Some(window) = collision_window {
+        config.collision_window_ms = window;
+        changes.push(format!("Collision window set to {}ms", window));
+    }
+    
+    if let Some(enabled) = auto_optimization {
+        config.auto_optimization_enabled = enabled;
+        changes.push(format!("Auto optimization {}", if enabled { "enabled" } else { "disabled" }));
+    }
+    
+    if !changes.is_empty() {
+        emulator.update_performance_config(config).await?;
+        println!("✅ Performance configuration updated:");
+        for change in changes {
+            println!("  • {}", change);
+        }
+        
+        // Run optimization to apply changes
+        let optimizations = emulator.optimize_performance().await?;
+        if !optimizations.is_empty() {
+            println!();
+            println!("⚠️  Optimization warnings:");
+            for opt in optimizations {
+                println!("  • {}", opt);
+            }
+        }
+    } else {
+        println!("No configuration changes specified. Use --help for available options.");
+    }
+    
+    Ok(())
+}
+
+/// Execute memory command
+async fn execute_memory_command(
+    emulator: &mut EmulatorManager,
+    breakdown: bool,
+    cleanup: Option<u64>,
+    gc: bool,
+    warning_threshold: Option<u64>,
+    stats: bool,
+) -> Result<(), EmulatorError> {
+    if let Some(max_age) = cleanup {
+        let cleaned = emulator.cleanup_old_messages(max_age).await?;
+        println!("🧹 Cleaned up {} old messages (older than {}s)", cleaned, max_age);
+        return Ok(());
+    }
+    
+    if gc {
+        emulator.force_memory_cleanup().await?;
+        println!("🗑️  Garbage collection completed");
+        return Ok(());
+    }
+    
+    if let Some(threshold) = warning_threshold {
+        let mut config = emulator.get_performance_config().await;
+        config.memory_warning_threshold = threshold;
+        emulator.update_performance_config(config).await?;
+        println!("⚠️  Memory warning threshold set to {:.1} MB", threshold as f64 / (1024.0 * 1024.0));
+        return Ok(());
+    }
+    
+    if breakdown || stats {
+        let memory_breakdown = emulator.get_memory_breakdown().await?;
+        let metrics = emulator.get_performance_metrics().await;
+        
+        println!("💾 Memory Usage");
+        println!("═══════════════");
+        println!("Current Usage: {:.1} MB", memory_breakdown.total_usage as f64 / (1024.0 * 1024.0));
+        println!("Peak Usage: {:.1} MB", metrics.peak_memory_usage as f64 / (1024.0 * 1024.0));
+        println!();
+        
+        if breakdown {
+            println!("Breakdown:");
+            println!("  Beacons: {:.1} MB ({} beacons)", 
+                memory_breakdown.beacon_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.beacon_count
+            );
+            println!("  Channels: {:.1} MB ({} channels)", 
+                memory_breakdown.channel_usage as f64 / (1024.0 * 1024.0),
+                memory_breakdown.channel_count
+            );
+            
+            if memory_breakdown.beacon_count > 0 {
+                println!("  Avg per beacon: {:.1} KB", 
+                    memory_breakdown.beacon_usage as f64 / (1024.0 * memory_breakdown.beacon_count as f64)
+                );
+            }
+            
+            if memory_breakdown.channel_count > 0 {
+                println!("  Avg per channel: {:.1} KB", 
+                    memory_breakdown.channel_usage as f64 / (1024.0 * memory_breakdown.channel_count as f64)
+                );
+            }
+        }
+        
+        if stats {
+            println!();
+            println!("Statistics:");
+            println!("  Total Messages: {}", metrics.total_messages_transmitted);
+            println!("  Message Queue Depth: {}", 
+                metrics.channel_queue_depths.values().sum::<usize>()
+            );
+            
+            let config = emulator.get_performance_config().await;
+            println!("  Warning Threshold: {:.1} MB", config.memory_warning_threshold as f64 / (1024.0 * 1024.0));
+            
+            let usage_percent = (memory_breakdown.total_usage as f64 / config.memory_warning_threshold as f64) * 100.0;
+            println!("  Usage vs Threshold: {:.1}%", usage_percent);
+            
+            if usage_percent > 80.0 {
+                println!("  ⚠️  Warning: Memory usage is high!");
+            }
+        }
+    } else {
+        println!("No memory operation specified. Use --help for available options.");
+    }
+    
+    Ok(())
+}

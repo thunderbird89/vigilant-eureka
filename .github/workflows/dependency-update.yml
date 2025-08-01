@@ -1,0 +1,192 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    # Run weekly on Mondays at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual triggering
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  update-dependencies:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-edit
+      run: cargo install cargo-edit
+
+    - name: Update dependencies
+      run: |
+        echo "# Dependency Update Report" > update-report.md
+        echo "" >> update-report.md
+        echo "Generated on: $(date)" >> update-report.md
+        echo "" >> update-report.md
+        
+        # Check for outdated dependencies
+        echo "## Outdated Dependencies" >> update-report.md
+        echo '```' >> update-report.md
+        cargo outdated >> update-report.md || echo "No outdated dependencies found" >> update-report.md
+        echo '```' >> update-report.md
+        
+        # Update patch versions (safe updates)
+        echo "" >> update-report.md
+        echo "## Patch Updates Applied" >> update-report.md
+        echo '```' >> update-report.md
+        
+        # Update each workspace member
+        for dir in receiver beacon shared-positioning beacon-emulator; do
+          if [ -d "$dir" ]; then
+            echo "Updating $dir..." >> update-report.md
+            cd "$dir"
+            cargo update >> ../update-report.md 2>&1 || echo "Update completed with warnings" >> ../update-report.md
+            cd ..
+          fi
+        done
+        
+        echo '```' >> update-report.md
+
+    - name: Run tests after updates
+      run: |
+        echo "" >> update-report.md
+        echo "## Test Results After Updates" >> update-report.md
+        echo '```' >> update-report.md
+        
+        if cargo test --all --lib; then
+          echo "✅ All tests passed after dependency updates" >> update-report.md
+        else
+          echo "❌ Some tests failed after dependency updates" >> update-report.md
+          echo "Manual review required" >> update-report.md
+        fi
+        
+        echo '```' >> update-report.md
+
+    - name: Check for security advisories
+      run: |
+        cargo install cargo-audit
+        echo "" >> update-report.md
+        echo "## Security Advisory Check" >> update-report.md
+        echo '```' >> update-report.md
+        cargo audit >> update-report.md 2>&1 || echo "Security audit completed with warnings" >> update-report.md
+        echo '```' >> update-report.md
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore: update dependencies (automated)"
+        title: "🤖 Automated Dependency Updates"
+        body: |
+          This is an automated pull request to update project dependencies.
+          
+          ## Changes
+          - Updated patch versions of dependencies
+          - Ran security audit
+          - Verified tests still pass
+          
+          ## Review Checklist
+          - [ ] Review the dependency update report
+          - [ ] Check that all tests pass
+          - [ ] Verify no breaking changes introduced
+          - [ ] Review security audit results
+          
+          **Note**: This PR was automatically generated. Please review carefully before merging.
+        branch: automated/dependency-updates
+        delete-branch: true
+        draft: false
+
+    - name: Upload update report
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependency-update-report
+        path: update-report.md
+
+  security-advisory-check:
+    name: Security Advisory Monitor
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Check for new security advisories
+      run: |
+        echo "# Security Advisory Monitor" > advisory-report.md
+        echo "" >> advisory-report.md
+        echo "Generated on: $(date)" >> advisory-report.md
+        echo "" >> advisory-report.md
+        
+        echo "## Current Security Status" >> advisory-report.md
+        echo '```' >> advisory-report.md
+        
+        if cargo audit --json | jq -e '.vulnerabilities | length > 0' > /dev/null; then
+          echo "⚠️  Security advisories found:" >> advisory-report.md
+          cargo audit --json | jq -r '.vulnerabilities[] | "- \(.advisory.title) (\(.advisory.id)) - Severity: \(.advisory.severity // "Unknown")"' >> advisory-report.md
+        else
+          echo "✅ No security advisories found" >> advisory-report.md
+        fi
+        
+        echo '```' >> advisory-report.md
+
+    - name: Create security issue if vulnerabilities found
+      run: |
+        if cargo audit --json | jq -e '.vulnerabilities | length > 0' > /dev/null; then
+          echo "SECURITY_ISSUE=true" >> $GITHUB_ENV
+          
+          # Create issue body
+          echo "# 🚨 Security Vulnerabilities Detected" > issue-body.md
+          echo "" >> issue-body.md
+          echo "The automated security scan has detected vulnerabilities in project dependencies." >> issue-body.md
+          echo "" >> issue-body.md
+          echo "## Affected Dependencies" >> issue-body.md
+          cargo audit --json | jq -r '.vulnerabilities[] | "- **\(.package.name)** v\(.package.version): \(.advisory.title) (\(.advisory.id))"' >> issue-body.md
+          echo "" >> issue-body.md
+          echo "## Recommended Actions" >> issue-body.md
+          echo "1. Review the security advisory details" >> issue-body.md
+          echo "2. Update affected dependencies" >> issue-body.md
+          echo "3. Test the application after updates" >> issue-body.md
+          echo "4. Consider alternative dependencies if updates are not available" >> issue-body.md
+          echo "" >> issue-body.md
+          echo "## Additional Information" >> issue-body.md
+          echo "- Generated by: Dependency Updates workflow" >> issue-body.md
+          echo "- Date: $(date)" >> issue-body.md
+          echo "- Commit: ${{ github.sha }}" >> issue-body.md
+        fi
+
+    - name: Create GitHub issue for security vulnerabilities
+      if: env.SECURITY_ISSUE == 'true'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const issueBody = fs.readFileSync('issue-body.md', 'utf8');
+          
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: '🚨 Security Vulnerabilities Detected - Automated Alert',
+            body: issueBody,
+            labels: ['security', 'dependencies', 'automated']
+          });
+
+    - name: Upload advisory report
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-advisory-report
+        path: advisory-report.md

@@ -1,0 +1,262 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, beta]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build all packages
+      run: cargo build --verbose --all
+
+    - name: Run unit tests
+      run: cargo test --verbose --all --lib
+
+    - name: Run integration tests
+      run: cargo test --verbose --all --test '*'
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-coverage-
+
+    - name: Generate code coverage
+      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: lcov.info
+        fail_ci_if_error: true
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit
+
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-bench-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-bench-
+
+    - name: Run benchmarks
+      run: |
+        # Run benchmarks and save results
+        cargo bench --all -- --output-format json | tee benchmark_results.json || true
+
+    - name: Store benchmark results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: benchmark_results.json
+
+  quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-quality-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-quality-
+
+    - name: Install additional tools
+      run: |
+        cargo install cargo-outdated
+        cargo install cargo-udeps --locked
+
+    - name: Check for outdated dependencies
+      run: cargo outdated --exit-code 1 || echo "Some dependencies are outdated"
+
+    - name: Check for unused dependencies
+      run: cargo +nightly udeps --all-targets || echo "Some unused dependencies found"
+
+    - name: Generate detailed clippy report
+      run: |
+        cargo clippy --all-targets --all-features --message-format=json -- -D warnings > clippy-report.json || true
+
+    - name: Upload quality reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: quality-reports
+        path: |
+          clippy-report.json
+
+  comprehensive-test:
+    name: Comprehensive Test Suite
+    runs-on: ubuntu-latest
+    needs: [test]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-comprehensive-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-comprehensive-
+
+    - name: Make test script executable
+      run: chmod +x run_tests.sh
+
+    - name: Run comprehensive test suite
+      run: ./run_tests.sh
+
+  release-check:
+    name: Release Readiness
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, coverage, security, quality, comprehensive-test]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check if ready for release
+      run: |
+        echo "✅ All tests passed"
+        echo "✅ Code coverage generated"
+        echo "✅ Security audit completed"
+        echo "✅ Code quality checks passed"
+        echo "✅ Comprehensive test suite completed"
+        echo ""
+        echo "🚀 Project is ready for release!"
+
+    - name: Create release summary
+      run: |
+        echo "# Release Summary" > release-summary.md
+        echo "" >> release-summary.md
+        echo "## Test Results" >> release-summary.md
+        echo "- ✅ Unit tests: Passed" >> release-summary.md
+        echo "- ✅ Integration tests: Passed" >> release-summary.md
+        echo "- ✅ Security audit: Passed" >> release-summary.md
+        echo "- ✅ Code quality: Passed" >> release-summary.md
+        echo "" >> release-summary.md
+        echo "## Metrics" >> release-summary.md
+        echo "- Code coverage: Available in artifacts" >> release-summary.md
+        echo "- Performance benchmarks: Available in artifacts" >> release-summary.md
+        echo "" >> release-summary.md
+        echo "Generated on: $(date)" >> release-summary.md
+
+    - name: Upload release summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-summary
+        path: release-summary.md

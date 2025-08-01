@@ -2,12 +2,7 @@ name: Quality Metrics
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  schedule:
-    # Run weekly on Sundays at 2 AM UTC
-    - cron: '0 2 * * 0'
+    branches: [ master ]
 
 env:
   CARGO_TERM_COLOR: always

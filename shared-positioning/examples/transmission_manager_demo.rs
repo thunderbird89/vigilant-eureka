@@ -21,20 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Power manager initialized");
 
     // Create transmission configuration
-    let config = TransmissionConfig {
-        default_interval_ms: 5000,
-        emergency_interval_ms: 1000,
-        power_save_interval_ms: 30000,
-        max_retry_attempts: 3,
-        retry_backoff_ms: 1000,
-        transmission_timeout_ms: 5000,
-        adaptive_power_enabled: true,
-        min_power_level: 10,
-        max_power_level: 255,
-        power_adaptation_threshold: 20.0,
-        environmental_adaptation_enabled: true,
-        queue_size_limit: 100,
-    };
+    let config = TransmissionConfig::default();
     println!("✓ Transmission configuration created");
 
     // Create transmission manager

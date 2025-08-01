@@ -25,7 +25,7 @@ pub struct SatelliteInfo {
 }
 
 /// GPS position data with accuracy and timing information
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpsPosition {
     pub latitude: f64,
     pub longitude: f64,
@@ -1392,8 +1392,8 @@ impl AdvancedGpsManager {
         }
         
         let positions: Vec<_> = self.position_history.iter().rev().take(5).collect();
-        let mut velocity_variations = Vec::new();
-        let mut prev_velocity = None;
+        let mut velocity_variations: Vec<f64> = Vec::new();
+        let mut prev_velocity: Option<Vector3<f64>> = None;
         
         for i in 0..positions.len()-1 {
             let pos1 = positions[i+1];
@@ -1406,10 +1406,10 @@ impl AdvancedGpsManager {
                 let lat_diff = (pos2.latitude - pos1.latitude) * 111320.0;
                 let lon_diff = (pos2.longitude - pos1.longitude) * 111320.0 * pos1.latitude.to_radians().cos();
                 
-                let velocity = Vector3::new(lon_diff / dt, lat_diff / dt, 0.0);
+                let velocity: Vector3<f64> = Vector3::new(lon_diff / dt, lat_diff / dt, 0.0);
                 
                 if let Some(prev_vel) = prev_velocity {
-                    let velocity_change: f64 = (velocity - prev_vel).magnitude() as f64;
+                    let velocity_change: f64 = (velocity - prev_vel).magnitude();
                     velocity_variations.push(velocity_change);
                 }
                 

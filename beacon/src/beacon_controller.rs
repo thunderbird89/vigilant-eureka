@@ -10,6 +10,7 @@ use serde::{Serialize, Deserialize};
 use shared_positioning::{
     GpsManager, PowerManager, CommunicationManager, TransceiverInterface,
     MessageBuilder, GeodeticPosition, GpsPosition, GpsConfig, GpsError, GpsStatus,
+    gps_manager::GnssConstellation,
     PowerConfig, PowerError, PowerOperationMode, BatteryStatus,
     CommunicationConfig, StatusReport, SystemHealth, CommTransmissionStats,
     ErrorLogEntry, CommErrorSeverity, CommError, TransmissionManager,
@@ -471,6 +472,15 @@ where
             min_satellite_count: self.config.gps.min_satellite_count,
             accuracy_threshold_m: self.config.gps.accuracy_threshold_m,
             cold_start_timeout_s: self.config.gps.cold_start_timeout_s,
+            enabled_constellations: vec![GnssConstellation::GPS],
+            constellation_priorities: std::collections::HashMap::new(),
+            min_elevation_deg: 10.0,
+            max_hdop: 5.0,
+            max_vdop: 5.0,
+            spoofing_detection_enabled: false,
+            dead_reckoning_enabled: false,
+            position_prediction_enabled: false,
+            quality_scoring_enabled: false,
         };
         self.gps_manager.configure(gps_config)?;
         self.gps_manager.start_acquisition()?;
@@ -590,6 +600,15 @@ where
             min_satellite_count: config.gps.min_satellite_count,
             accuracy_threshold_m: config.gps.accuracy_threshold_m,
             cold_start_timeout_s: config.gps.cold_start_timeout_s,
+            enabled_constellations: vec![GnssConstellation::GPS],
+            constellation_priorities: std::collections::HashMap::new(),
+            min_elevation_deg: 10.0,
+            max_hdop: 5.0,
+            max_vdop: 5.0,
+            spoofing_detection_enabled: false,
+            dead_reckoning_enabled: false,
+            position_prediction_enabled: false,
+            quality_scoring_enabled: false,
         };
         let current_gps_config = shared_positioning::GpsConfig {
             acquisition_timeout_s: self.config.gps.acquisition_timeout_s,
@@ -597,6 +616,15 @@ where
             min_satellite_count: self.config.gps.min_satellite_count,
             accuracy_threshold_m: self.config.gps.accuracy_threshold_m,
             cold_start_timeout_s: self.config.gps.cold_start_timeout_s,
+            enabled_constellations: vec![GnssConstellation::GPS],
+            constellation_priorities: std::collections::HashMap::new(),
+            min_elevation_deg: 10.0,
+            max_hdop: 5.0,
+            max_vdop: 5.0,
+            spoofing_detection_enabled: false,
+            dead_reckoning_enabled: false,
+            position_prediction_enabled: false,
+            quality_scoring_enabled: false,
         };
         if new_gps_config != current_gps_config {
             self.gps_manager.configure(new_gps_config)?;

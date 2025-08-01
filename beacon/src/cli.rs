@@ -14,7 +14,7 @@ use crate::deployment::{
 };
 use shared_positioning::{
     MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver,
-    GeodeticPosition,
+    GeodeticPosition, gps_manager::GnssConstellation,
 };
 
 // Type alias for the concrete beacon controller type
@@ -432,6 +432,15 @@ async fn create_temp_beacon_controller(config: shared_positioning::BeaconConfig)
         min_satellite_count: config.gps.min_satellite_count,
         accuracy_threshold_m: config.gps.accuracy_threshold_m,
         cold_start_timeout_s: config.gps.cold_start_timeout_s,
+        enabled_constellations: vec![GnssConstellation::GPS],
+        constellation_priorities: std::collections::HashMap::new(),
+        min_elevation_deg: 10.0,
+        max_hdop: 5.0,
+        max_vdop: 5.0,
+        spoofing_detection_enabled: false,
+        dead_reckoning_enabled: false,
+        position_prediction_enabled: false,
+        quality_scoring_enabled: false,
     };
     let gps_manager = MockGpsManager::with_test_positions(gps_config)
         .context("Failed to create GPS manager")?;

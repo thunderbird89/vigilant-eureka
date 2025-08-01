@@ -2326,13 +2326,13 @@ mod tests {
         
         manager.current_position = Some(current_position.clone());
         
-        // Add some position history
+        // Add some position history showing movement northeast (increasing lat/lon over time)
         for i in 0..3 {
             let position = GpsPosition {
-                latitude: 37.7749 - (i as f64 * 0.0001),
-                longitude: -122.4194 - (i as f64 * 0.0001),
+                latitude: 37.7749 + (i as f64 * 0.0001), // Moving north (increasing latitude)
+                longitude: -122.4194 + (i as f64 * 0.0001), // Moving east (increasing longitude)
                 altitude: 10.0,
-                timestamp: SystemTime::now() - Duration::from_secs((i + 1) * 5),
+                timestamp: SystemTime::now() - Duration::from_secs((3 - i) * 5), // Older positions first
                 accuracy_m: 3.0,
                 satellite_count: 8,
                 velocity: Some(Vector3::new(10.0, 5.0, 0.1)),

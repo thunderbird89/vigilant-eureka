@@ -192,12 +192,18 @@ where
     C: CommunicationManager + Send + 'static,
     T: TransceiverInterface + Send + 'static,
 {
-    config: BeaconConfig,
-    operational_state: OperationalState,
-    gps_manager: G,
-    power_manager: P,
-    communication_manager: C,
-    transceiver: T,
+    /// Current beacon configuration
+    pub config: BeaconConfig,
+    /// Current operational state
+    pub operational_state: OperationalState,
+    /// GPS manager implementation
+    pub gps_manager: G,
+    /// Power manager implementation
+    pub power_manager: P,
+    /// Communication manager implementation
+    pub communication_manager: C,
+    /// Transceiver interface implementation
+    pub transceiver: T,
     transmission_config: TransmissionConfig,
     transmission_statistics: TransmissionStatistics,
     start_time: SystemTime,
@@ -215,7 +221,8 @@ where
     diagnostic_system: DiagnosticSystemManager,
     last_diagnostic_report: Option<SystemTime>,
     // Environmental monitoring and adaptation
-    environmental_monitor: EnvironmentalMonitor,
+    /// Environmental monitoring subsystem
+    pub environmental_monitor: EnvironmentalMonitor,
     last_environmental_update: Option<SystemTime>,
     // Hardware fault detection and recovery
     hardware_monitor: HardwareMonitor,
@@ -566,6 +573,7 @@ where
         self.start_advanced_reliability_systems()?;
         
         // Start main control loop
+        #[cfg(not(test))]
         self.run_control_loop()?;
         
         Ok(())
@@ -1569,8 +1577,9 @@ where
         Ok(())
     }
     
-    /// Handle message transmission
-    fn handle_transmission(&mut self) -> Result<(), BeaconError> {
+    /// Handle message transmission. This is public to allow integration
+    /// tests to trigger a single transmission cycle.
+    pub fn handle_transmission(&mut self) -> Result<(), BeaconError> {
         // Get current position
         let position = if let Some(gps_pos) = self.gps_manager.get_current_position() {
             GeodeticPosition {

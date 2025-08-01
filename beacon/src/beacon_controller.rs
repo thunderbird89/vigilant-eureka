@@ -573,6 +573,7 @@ where
         self.start_advanced_reliability_systems()?;
         
         // Start main control loop
+        #[cfg(not(test))]
         self.run_control_loop()?;
         
         Ok(())

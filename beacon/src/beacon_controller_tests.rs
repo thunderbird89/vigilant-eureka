@@ -7,6 +7,7 @@ mod tests {
         MockTransceiver, beacon_config::MessageVersion
     };
     use uuid::Uuid;
+    
     use crate::{BeaconController, LocalEmergencyType};
 
     fn create_test_config() -> BeaconConfig {
@@ -72,13 +73,10 @@ mod tests {
     fn test_beacon_start_stop() {
         let config = create_test_config();
         let (gps, power, comm, transceiver) = create_mock_managers();
-        
+
         let mut controller = BeaconController::new(config, gps, power, comm, transceiver).unwrap();
-        
-        // Test start
+
         assert!(controller.start().is_ok());
-        
-        // Test stop
         assert!(controller.stop().is_ok());
     }
 

@@ -617,6 +617,16 @@ impl MockTransceiver {
         data
     }
     
+    /// Set whether transmission should fail for testing
+    pub fn set_should_fail_transmission(&mut self, should_fail: bool) {
+        if should_fail {
+            self.enable_error_simulation(1.0); // 100% failure rate
+        } else {
+            self.simulate_errors = false;
+            self.error_probability = 0.0;
+        }
+    }
+    
     /// Simulate random error for testing
     fn should_simulate_error(&self) -> bool {
         if !self.simulate_errors {

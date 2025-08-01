@@ -591,6 +591,7 @@ mod tests {
 
     #[test]
     fn test_create_backup() {
+        use uuid::Uuid;
         let temp_dir = TempDir::new().unwrap();
         let config = BackupManagerConfig {
             backup_directory: temp_dir.path().to_path_buf(),
@@ -599,7 +600,7 @@ mod tests {
         };
 
         let mut manager = ConfigBackupManager::new(config).unwrap();
-        let beacon_config = BeaconConfig::default();
+        let beacon_config = BeaconConfig::new(Uuid::new_v4());
 
         let backup_id = manager.create_backup(
             &beacon_config,

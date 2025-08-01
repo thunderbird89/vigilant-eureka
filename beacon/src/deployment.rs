@@ -274,7 +274,7 @@ impl StatusMonitor {
         let mut warning_count = 0;
         let mut critical_count = 0;
         
-        for (beacon_id, deployment) in &self.fleet.beacons {
+        for (beacon_id, _deployment) in &self.fleet.beacons {
             match self.get_beacon_status(*beacon_id).await {
                 Ok(status) => {
                     let health = self.assess_beacon_health(&status);
@@ -450,8 +450,8 @@ impl RemoteConfigManager {
         
         for beacon_id in beacon_ids {
             // Get existing beacon configuration to preserve beacon ID
-            if let Some(deployment) = self.fleet.beacons.get(&beacon_id) {
-                let mut new_config = config_generator.generate_beacon_config(Some(beacon_id));
+            if let Some(_deployment) = self.fleet.beacons.get(&beacon_id) {
+                let new_config = config_generator.generate_beacon_config(Some(beacon_id));
                 // Preserve any beacon-specific settings if needed
                 config_updates.insert(beacon_id, new_config);
             }
@@ -460,7 +460,7 @@ impl RemoteConfigManager {
         self.update_fleet_config(config_updates).await
     }
     
-    async fn simulate_config_update(&self, beacon_id: Uuid, config: &BeaconConfig) -> Result<()> {
+    async fn simulate_config_update(&self, beacon_id: Uuid, _config: &BeaconConfig) -> Result<()> {
         // Simulate network delay and potential failures
         tokio::time::sleep(Duration::from_millis(100)).await;
         

@@ -14,7 +14,7 @@ use crate::deployment::{
 };
 use shared_positioning::{
     MockGpsManager, MockPowerManager, MockCommunicationManager, MockTransceiver,
-    GeodeticPosition, gps_manager::GnssConstellation,
+    gps_manager::GnssConstellation,
 };
 
 // Type alias for the concrete beacon controller type
@@ -854,7 +854,7 @@ impl DeployCommand {
     async fn handle_fleet_action(&self, action: &FleetAction) -> Result<()> {
         match action {
             FleetAction::Create { id, name, data_dir } => {
-                let fleet_manager = FleetManager::create_fleet(id.clone(), name.clone(), data_dir.clone()).await
+                let _fleet_manager = FleetManager::create_fleet(id.clone(), name.clone(), data_dir.clone()).await
                     .context("Failed to create fleet")?;
                 
                 println!("✓ Created fleet: {} ({})", name, id);

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+// Removed unused serde imports
 use std::path::PathBuf;
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::info;
 
 use shared_positioning::BeaconConfig;
 

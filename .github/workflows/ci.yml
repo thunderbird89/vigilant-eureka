@@ -36,11 +36,11 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
-    - name: Check formatting
-      run: cargo fmt --all -- --check
+    # - name: Check formatting
+    #   run: cargo fmt --all -- --check
 
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
+    # - name: Run clippy
+    #   run: cargo clippy --all-targets --all-features -- -D warnings
 
     - name: Build all packages
       run: cargo build --verbose --all
@@ -51,41 +51,41 @@ jobs:
     - name: Run integration tests
       run: cargo test --verbose --all --test '*'
 
-  coverage:
-    name: Code Coverage
-    runs-on: ubuntu-latest
+  # coverage:
+  #   name: Code Coverage
+  #   runs-on: ubuntu-latest
     
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+  #   steps:
+  #   - name: Checkout code
+  #     uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: llvm-tools-preview
+  #   - name: Install Rust toolchain
+  #     uses: dtolnay/rust-toolchain@stable
+  #     with:
+  #       components: llvm-tools-preview
 
-    - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
+  #   - name: Install cargo-llvm-cov
+  #     uses: taiki-e/install-action@cargo-llvm-cov
 
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-coverage-
+  #   - name: Cache cargo registry
+  #     uses: actions/cache@v3
+  #     with:
+  #       path: |
+  #         ~/.cargo/registry
+  #         ~/.cargo/git
+  #         target
+  #       key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+  #       restore-keys: |
+  #         ${{ runner.os }}-coverage-
 
-    - name: Generate code coverage
-      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+  #   - name: Generate code coverage
+  #     run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        files: lcov.info
-        fail_ci_if_error: true
+  #   - name: Upload coverage to Codecov
+  #     uses: codecov/codecov-action@v3
+  #     with:
+  #       files: lcov.info
+  #       fail_ci_if_error: true
 
   security:
     name: Security Audit

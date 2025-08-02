@@ -1398,8 +1398,12 @@ mod tests {
         let mut manager = EmulatorManager::new("test_channel");
         let position = create_test_position();
         
+        // Create a custom config with shorter transmission interval for testing
+        let mut config = BeaconConfig::new(Uuid::new_v4());
+        config.transmission.interval_ms = 100; // 100ms for fast testing
+        
         // Create and start beacon
-        let beacon_id = manager.create_beacon(None, position, None).await.unwrap();
+        let beacon_id = manager.create_beacon(None, position, Some(config)).await.unwrap();
         manager.start_beacon(beacon_id).await.unwrap();
         
         // Get channel to subscribe to messages after beacon is created
@@ -1410,12 +1414,12 @@ mod tests {
         };
         let mut receiver = channel.subscribe();
         
-        // Wait for message transmission
+        // Wait for message transmission (using 100ms interval)
         sleep(Duration::from_millis(200)).await;
         
         // Check if we received a message
         let received_message = tokio::time::timeout(
-            Duration::from_millis(100),
+            Duration::from_millis(300),
             receiver.recv()
         ).await;
         

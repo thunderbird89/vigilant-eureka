@@ -150,12 +150,12 @@ mod virtual_beacon_tests {
         let original_config = beacon.get_status().config;
         
         let mut new_config = create_test_beacon_config();
-        new_config.transmission.interval_ms = 3000;
+        new_config.transmission.interval_ms = 5000;
         
         beacon.update_config(new_config.clone()).unwrap();
         
         let updated_status = beacon.get_status();
-        assert_eq!(updated_status.config.transmission.interval_ms, 3000);
+        assert_eq!(updated_status.config.transmission.interval_ms, 5000);
         assert_ne!(updated_status.config.transmission.interval_ms, 
                   original_config.transmission.interval_ms);
     }

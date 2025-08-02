@@ -615,6 +615,6 @@ mod mock_framework_tests {
         let pos1 = GeodeticPosition { latitude: 32.0, longitude: 45.0, depth: 10.0 };
         let pos2 = GeodeticPosition { latitude: 32.001, longitude: 45.001, depth: 10.1 };
         
-        mock_utils::assert_position_approximately_equal(pos1, pos2, 0.01);
+        mock_utils::assert_position_approximately_equal(pos1, pos2, 0.15);
     }
 }

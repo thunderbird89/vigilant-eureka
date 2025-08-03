@@ -492,10 +492,16 @@ mod scenario_integration_tests {
             assert_eq!(pos.depth, center.depth);
         }
         
-        // Positions should be different
-        assert_ne!(positions[0].latitude, positions[1].latitude);
-        assert_ne!(positions[1].latitude, positions[2].latitude);
-        assert_ne!(positions[0].latitude, positions[2].latitude);
+        // Positions should be different (at least one coordinate should differ)
+        assert_ne!(positions[0], positions[1]);
+        assert_ne!(positions[1], positions[2]);
+        assert_ne!(positions[0], positions[2]);
+        
+        // In an equilateral triangle, two points may have the same latitude
+        // but all longitudes should be different
+        assert_ne!(positions[0].longitude, positions[1].longitude);
+        assert_ne!(positions[1].longitude, positions[2].longitude);
+        assert_ne!(positions[0].longitude, positions[2].longitude);
     }
     
     #[tokio::test]
@@ -656,8 +662,8 @@ mod configuration_integration_tests {
         let mut manager = create_test_manager().await;
         let position = create_test_position();
         
-        // Create a temporary config file
-        let temp_file = NamedTempFile::new().unwrap();
+        // Create a temporary config file with .toml extension
+        let temp_file = NamedTempFile::with_suffix(".toml").unwrap();
         let config_path = temp_file.path();
         
         // Generate a config template
@@ -677,8 +683,8 @@ mod configuration_integration_tests {
         let mut manager = create_test_manager().await;
         let position = create_test_position();
         
-        // Create a temporary emulator config file
-        let temp_file = NamedTempFile::new().unwrap();
+        // Create a temporary emulator config file with .json extension
+        let temp_file = NamedTempFile::with_suffix(".json").unwrap();
         let config_path = temp_file.path();
         
         // Generate an emulator config template

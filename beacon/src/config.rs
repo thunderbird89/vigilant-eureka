@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+// Removed unused serde imports
 use std::path::PathBuf;
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::info;
 
 use shared_positioning::BeaconConfig;
 
@@ -289,12 +289,21 @@ mod tests {
         
         let original_config = BeaconConfig {
             beacon_id: Uuid::new_v4(),
-            transmission_interval_ms: 5000,
-            message_version: crate::beacon_controller::MessageVersion::V3,
-            gps_config: shared_positioning::GpsConfig::default(),
-            power_config: shared_positioning::PowerConfig::default(),
-            communication_config: shared_positioning::CommunicationConfig::default(),
-            emergency_config: crate::beacon_controller::EmergencyConfig::default(),
+            transmission: shared_positioning::beacon_config::TransmissionConfig {
+                interval_ms: 5000,
+                message_version: shared_positioning::beacon_config::MessageVersion::V3,
+                power_level: 128,
+                max_retries: 3,
+                retry_delay_ms: 1000,
+                adaptive_power: true,
+                sequence_rollover: 65535,
+            },
+            gps: shared_positioning::beacon_config::GpsConfig::default(),
+            power: shared_positioning::beacon_config::PowerConfig::default(),
+            communication: shared_positioning::beacon_config::CommunicationConfig::default(),
+            emergency: shared_positioning::beacon_config::EmergencyConfig::default(),
+            hardware: shared_positioning::beacon_config::HardwareConfig::default(),
+            metadata: shared_positioning::beacon_config::BeaconConfigMetadata::default(),
         };
         
         // Save configuration
@@ -304,30 +313,39 @@ mod tests {
         let loaded_config = config_manager.load_config().await.unwrap();
         
         assert_eq!(original_config.beacon_id, loaded_config.beacon_id);
-        assert_eq!(original_config.transmission_interval_ms, loaded_config.transmission_interval_ms);
+        assert_eq!(original_config.transmission.interval_ms, loaded_config.transmission.interval_ms);
     }
     
     #[test]
     fn test_config_validation() {
         let mut config = BeaconConfig {
             beacon_id: Uuid::new_v4(),
-            transmission_interval_ms: 5000,
-            message_version: crate::beacon_controller::MessageVersion::V3,
-            gps_config: shared_positioning::GpsConfig::default(),
-            power_config: shared_positioning::PowerConfig::default(),
-            communication_config: shared_positioning::CommunicationConfig::default(),
-            emergency_config: crate::beacon_controller::EmergencyConfig::default(),
+            transmission: shared_positioning::beacon_config::TransmissionConfig {
+                interval_ms: 5000,
+                message_version: shared_positioning::beacon_config::MessageVersion::V3,
+                power_level: 128,
+                max_retries: 3,
+                retry_delay_ms: 1000,
+                adaptive_power: true,
+                sequence_rollover: 65535,
+            },
+            gps: shared_positioning::beacon_config::GpsConfig::default(),
+            power: shared_positioning::beacon_config::PowerConfig::default(),
+            communication: shared_positioning::beacon_config::CommunicationConfig::default(),
+            emergency: shared_positioning::beacon_config::EmergencyConfig::default(),
+            hardware: shared_positioning::beacon_config::HardwareConfig::default(),
+            metadata: shared_positioning::beacon_config::BeaconConfigMetadata::default(),
         };
         
         // Valid configuration should pass
         assert!(validate_config(&config).is_ok());
         
         // Invalid transmission interval should fail
-        config.transmission_interval_ms = 500;
+        config.transmission.interval_ms = 500;
         assert!(validate_config(&config).is_err());
         
         // Nil beacon ID should fail
-        config.transmission_interval_ms = 5000;
+        config.transmission.interval_ms = 5000;
         config.beacon_id = Uuid::nil();
         assert!(validate_config(&config).is_err());
     }

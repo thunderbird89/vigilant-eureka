@@ -10,3 +10,5 @@
 
 # Data used for testing and emulation
 data/
+
+beacon/config_backups/

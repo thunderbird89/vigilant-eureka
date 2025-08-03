@@ -1,0 +1,227 @@
+name: Quality Metrics
+
+# on:
+#   push:
+#     branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  complexity-analysis:
+    name: Code Complexity Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install tokei for code metrics
+      run: cargo install tokei
+
+    - name: Generate code statistics
+      run: |
+        echo "# Code Statistics" > code-stats.md
+        echo "" >> code-stats.md
+        echo "## Lines of Code" >> code-stats.md
+        echo '```' >> code-stats.md
+        tokei --output json . | jq -r '
+          .languages | to_entries[] | 
+          select(.key != "Total") | 
+          "\(.key): \(.value.code) lines"
+        ' >> code-stats.md
+        echo '```' >> code-stats.md
+        echo "" >> code-stats.md
+        echo "## Detailed Breakdown" >> code-stats.md
+        echo '```' >> code-stats.md
+        tokei . >> code-stats.md
+        echo '```' >> code-stats.md
+
+    - name: Upload code statistics
+      uses: actions/upload-artifact@v4
+      with:
+        name: code-statistics
+        path: code-stats.md
+
+  dependency-analysis:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-tree
+      run: cargo install cargo-tree
+
+    - name: Generate dependency tree
+      run: |
+        echo "# Dependency Analysis" > dependency-analysis.md
+        echo "" >> dependency-analysis.md
+        echo "## Dependency Tree" >> dependency-analysis.md
+        echo '```' >> dependency-analysis.md
+        cargo tree --all-features >> dependency-analysis.md
+        echo '```' >> dependency-analysis.md
+        echo "" >> dependency-analysis.md
+        echo "## Duplicate Dependencies" >> dependency-analysis.md
+        echo '```' >> dependency-analysis.md
+        cargo tree --duplicates >> dependency-analysis.md || echo "No duplicate dependencies found" >> dependency-analysis.md
+        echo '```' >> dependency-analysis.md
+
+    - name: Check for security advisories
+      run: |
+        cargo install cargo-audit
+        echo "" >> dependency-analysis.md
+        echo "## Security Advisories" >> dependency-analysis.md
+        echo '```' >> dependency-analysis.md
+        cargo audit --json | jq -r '.vulnerabilities[] | "- \(.advisory.title) (\(.advisory.id))"' >> dependency-analysis.md || echo "No security advisories found" >> dependency-analysis.md
+        echo '```' >> dependency-analysis.md
+
+    - name: Upload dependency analysis
+      uses: actions/upload-artifact@v4
+      with:
+        name: dependency-analysis
+        path: dependency-analysis.md
+
+  documentation-check:
+    name: Documentation Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check documentation coverage
+      run: |
+        echo "# Documentation Quality Report" > doc-quality.md
+        echo "" >> doc-quality.md
+        echo "## Documentation Coverage" >> doc-quality.md
+        echo '```' >> doc-quality.md
+        
+        # Check for missing documentation
+        cargo doc --no-deps 2>&1 | grep -E "(warning|error)" >> doc-quality.md || echo "No documentation warnings found" >> doc-quality.md
+        echo '```' >> doc-quality.md
+
+    - name: Generate documentation
+      run: |
+        cargo doc --no-deps --all-features
+        echo "" >> doc-quality.md
+        echo "## Generated Documentation" >> doc-quality.md
+        echo "Documentation has been generated successfully" >> doc-quality.md
+
+    - name: Check README files
+      run: |
+        echo "" >> doc-quality.md
+        echo "## README Files" >> doc-quality.md
+        find . -name "README.md" -type f | while read readme; do
+          echo "- Found: $readme" >> doc-quality.md
+        done
+
+    - name: Upload documentation report
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation-quality
+        path: |
+          doc-quality.md
+          target/doc/
+
+  performance-tracking:
+    name: Performance Tracking
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-perf-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run performance benchmarks
+      run: |
+        echo "# Performance Tracking Report" > performance-report.md
+        echo "" >> performance-report.md
+        echo "Generated on: $(date)" >> performance-report.md
+        echo "Commit: ${{ github.sha }}" >> performance-report.md
+        echo "" >> performance-report.md
+        
+        # Run benchmarks if they exist
+        if find . -name "*.rs" -path "*/benches/*" | grep -q .; then
+          echo "## Benchmark Results" >> performance-report.md
+          echo '```' >> performance-report.md
+          cargo bench --all 2>&1 | tee -a performance-report.md || echo "Benchmarks completed with warnings" >> performance-report.md
+          echo '```' >> performance-report.md
+        else
+          echo "## Benchmark Results" >> performance-report.md
+          echo "No benchmark files found" >> performance-report.md
+        fi
+
+    - name: Upload performance report
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-report
+        path: performance-report.md
+
+  quality-summary:
+    name: Quality Summary
+    runs-on: ubuntu-latest
+    needs: [complexity-analysis, dependency-analysis, documentation-check]
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Create quality summary
+      run: |
+        echo "# Quality Metrics Summary" > quality-summary.md
+        echo "" >> quality-summary.md
+        echo "Generated on: $(date)" >> quality-summary.md
+        echo "Repository: ${{ github.repository }}" >> quality-summary.md
+        echo "Commit: ${{ github.sha }}" >> quality-summary.md
+        echo "" >> quality-summary.md
+        
+        echo "## Available Reports" >> quality-summary.md
+        echo "- ✅ Code Statistics" >> quality-summary.md
+        echo "- ✅ Dependency Analysis" >> quality-summary.md
+        echo "- ✅ Documentation Quality" >> quality-summary.md
+        
+        if [ -f performance-report/performance-report.md ]; then
+          echo "- ✅ Performance Tracking" >> quality-summary.md
+        fi
+        
+        echo "" >> quality-summary.md
+        echo "## Quick Stats" >> quality-summary.md
+        
+        # Extract key metrics if files exist
+        if [ -f code-statistics/code-stats.md ]; then
+          echo "### Code Statistics" >> quality-summary.md
+          grep -A 10 "Lines of Code" code-statistics/code-stats.md | tail -n +3 >> quality-summary.md || true
+        fi
+        
+        echo "" >> quality-summary.md
+        echo "---" >> quality-summary.md
+        echo "*This summary was automatically generated by the Quality Metrics workflow*" >> quality-summary.md
+
+    - name: Upload quality summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: quality-summary
+        path: quality-summary.md

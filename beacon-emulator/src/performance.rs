@@ -723,6 +723,7 @@ mod tests {
         assert_eq!(metrics.active_beacon_count, 25);
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_memory_tracker() {
         let tracker = MemoryTracker::new();

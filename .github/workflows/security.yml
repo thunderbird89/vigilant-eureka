@@ -1,0 +1,263 @@
+name: Security Scan
+
+# on:
+#   push:
+#     branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-security-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: |
+          echo "# Security Audit Report" > security-report.md
+          echo "" >> security-report.md
+          echo "Generated on: $(date)" >> security-report.md
+          echo "Repository: ${{ github.repository }}" >> security-report.md
+          echo "" >> security-report.md
+
+          echo "## Vulnerability Scan Results" >> security-report.md
+          echo '```' >> security-report.md
+          cargo audit --json | jq -r '
+            if .vulnerabilities | length == 0 then
+              "✅ No vulnerabilities found"
+            else
+              .vulnerabilities[] | 
+              "❌ \(.advisory.title)\n   ID: \(.advisory.id)\n   Severity: \(.advisory.severity // "Unknown")\n   Package: \(.package.name) v\(.package.version)\n   Description: \(.advisory.description)\n"
+            end
+          ' >> security-report.md
+          echo '```' >> security-report.md
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.md
+
+      - name: Fail on high severity vulnerabilities
+        run: |
+          HIGH_VULNS=$(cargo audit --json | jq '.vulnerabilities[] | select(.advisory.severity == "high" or .advisory.severity == "critical") | length')
+          if [ "$HIGH_VULNS" -gt 0 ]; then
+            echo "❌ Found high/critical severity vulnerabilities"
+            exit 1
+          fi
+
+  dependency-check:
+    name: Dependency License Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-license
+        run: cargo install cargo-license
+
+      - name: Check dependency licenses
+        run: |
+          echo "# Dependency License Report" > license-report.md
+          echo "" >> license-report.md
+          echo "Generated on: $(date)" >> license-report.md
+          echo "" >> license-report.md
+          echo "## License Summary" >> license-report.md
+          echo '```' >> license-report.md
+          cargo license --json | jq -r '
+            group_by(.license) | 
+            map({license: .[0].license, count: length}) | 
+            sort_by(.count) | 
+            reverse | 
+            .[] | 
+            "\(.license): \(.count) dependencies"
+          ' >> license-report.md
+          echo '```' >> license-report.md
+
+          echo "" >> license-report.md
+          echo "## Detailed License Information" >> license-report.md
+          echo '```' >> license-report.md
+          cargo license >> license-report.md
+          echo '```' >> license-report.md
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: license-report.md
+
+  supply-chain-security:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Create cargo-deny configuration
+        run: |
+          cat > deny.toml << 'EOF'
+          [graph]
+          targets = [
+              { triple = "x86_64-unknown-linux-gnu" },
+              { triple = "x86_64-pc-windows-msvc" },
+              { triple = "x86_64-apple-darwin" },
+          ]
+
+          [advisories]
+          db-path = "~/.cargo/advisory-db"
+          db-urls = ["https://github.com/rustsec/advisory-db"]
+          vulnerability = "deny"
+          unmaintained = "warn"
+          yanked = "warn"
+          notice = "warn"
+          ignore = []
+
+          [licenses]
+          unlicensed = "deny"
+          allow = [
+              "MIT",
+              "Apache-2.0",
+              "Apache-2.0 WITH LLVM-exception",
+              "BSD-2-Clause",
+              "BSD-3-Clause",
+              "ISC",
+              "Unicode-DFS-2016",
+          ]
+          deny = [
+              "GPL-2.0",
+              "GPL-3.0",
+              "AGPL-1.0",
+              "AGPL-3.0",
+          ]
+          copyleft = "warn"
+          allow-osi-fsf-free = "neither"
+          default = "deny"
+          confidence-threshold = 0.8
+
+          [bans]
+          multiple-versions = "warn"
+          wildcards = "allow"
+          highlight = "all"
+          workspace-default-features = "allow"
+          external-default-features = "allow"
+          allow = []
+          deny = []
+          skip = []
+          skip-tree = []
+
+          [sources]
+          unknown-registry = "warn"
+          unknown-git = "warn"
+          allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+          allow-git = []
+          EOF
+
+      - name: Run cargo-deny
+        run: |
+          echo "# Supply Chain Security Report" > supply-chain-report.md
+          echo "" >> supply-chain-report.md
+          echo "Generated on: $(date)" >> supply-chain-report.md
+          echo "" >> supply-chain-report.md
+
+          echo "## Advisory Check" >> supply-chain-report.md
+          echo '```' >> supply-chain-report.md
+          cargo deny check advisories 2>&1 >> supply-chain-report.md || echo "Advisory check completed with warnings" >> supply-chain-report.md
+          echo '```' >> supply-chain-report.md
+
+          echo "" >> supply-chain-report.md
+          echo "## License Check" >> supply-chain-report.md
+          echo '```' >> supply-chain-report.md
+          cargo deny check licenses 2>&1 >> supply-chain-report.md || echo "License check completed with warnings" >> supply-chain-report.md
+          echo '```' >> supply-chain-report.md
+
+          echo "" >> supply-chain-report.md
+          echo "## Banned Dependencies Check" >> supply-chain-report.md
+          echo '```' >> supply-chain-report.md
+          cargo deny check bans 2>&1 >> supply-chain-report.md || echo "Bans check completed with warnings" >> supply-chain-report.md
+          echo '```' >> supply-chain-report.md
+
+      - name: Upload supply chain report
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-report
+          path: |
+            supply-chain-report.md
+            deny.toml
+
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [security-audit, dependency-check, supply-chain-security]
+
+    steps:
+      - name: Download all security artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create security summary
+        run: |
+          echo "# Security Summary Report" > security-summary.md
+          echo "" >> security-summary.md
+          echo "Generated on: $(date)" >> security-summary.md
+          echo "Repository: ${{ github.repository }}" >> security-summary.md
+          echo "Commit: ${{ github.sha }}" >> security-summary.md
+          echo "" >> security-summary.md
+
+          echo "## Security Checks Completed" >> security-summary.md
+          echo "- ✅ Vulnerability Scan" >> security-summary.md
+          echo "- ✅ License Compliance Check" >> security-summary.md
+          echo "- ✅ Supply Chain Security Analysis" >> security-summary.md
+          echo "" >> security-summary.md
+
+          echo "## Quick Status" >> security-summary.md
+
+          # Check for vulnerabilities
+          if grep -q "❌" security-report/security-report.md 2>/dev/null; then
+            echo "- ⚠️  Vulnerabilities detected - Review security report" >> security-summary.md
+          else
+            echo "- ✅ No vulnerabilities found" >> security-summary.md
+          fi
+
+          echo "" >> security-summary.md
+          echo "## Recommendations" >> security-summary.md
+          echo "1. Review all security reports in the artifacts" >> security-summary.md
+          echo "2. Update dependencies regularly" >> security-summary.md
+          echo "3. Monitor security advisories" >> security-summary.md
+          echo "4. Consider using dependabot for automated updates" >> security-summary.md
+          echo "" >> security-summary.md
+          echo "---" >> security-summary.md
+          echo "*This summary was automatically generated by the Security Scan workflow*" >> security-summary.md
+
+      - name: Upload security summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-summary
+          path: security-summary.md

@@ -218,13 +218,7 @@ async fn run_beacon_service(config_path: &PathBuf) -> Result<()> {
 async fn create_beacon_controller(config: BeaconConfig) -> Result<ConcreteBeaconController> {
     // Create mock managers for demonstration
     // In a real implementation, these would be actual hardware interfaces
-    let gps_config = shared_positioning::GpsConfig {
-        acquisition_timeout_s: config.gps.acquisition_timeout_s,
-        update_interval_s: config.gps.update_interval_s,
-        min_satellite_count: config.gps.min_satellite_count,
-        accuracy_threshold_m: config.gps.accuracy_threshold_m,
-        cold_start_timeout_s: config.gps.cold_start_timeout_s,
-    };
+    let gps_config = shared_positioning::GpsConfig::default();
     let gps_manager = MockGpsManager::with_test_positions(gps_config)
         .context("Failed to create GPS manager")?;
     

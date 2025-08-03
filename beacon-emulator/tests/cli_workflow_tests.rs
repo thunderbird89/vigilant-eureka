@@ -37,6 +37,9 @@ mod cli_test_utils {
             log_level: "info".to_string(),
             state_file: None,
             ipc_port: 8765,
+            quiet: false,
+            non_interactive: false,
+            automation_mode: false,
             command: EmulatorCommand::List {
                 detailed: false,
                 running_only: false,
